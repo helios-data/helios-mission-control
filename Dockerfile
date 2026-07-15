@@ -17,8 +17,11 @@ WORKDIR /app
 
 # Dependency layer. Dev extras bring grpcio-tools + betterproto2-compiler so the
 # proto compile step below works. (STANDALONE mode needs neither protos nor SDK.)
+# --no-install-project: install only deps here — the root package's build needs
+# README.md + src/ which aren't copied yet, and the app runs `src.main` from /app
+# (not as an installed package) so it never needs installing anyway.
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --extra dev
+RUN uv sync --extra dev --no-install-project
 
 # Submodules + proto sources (helios-launcher checks these out before building).
 COPY helios-python-sdk/ ./helios-python-sdk/
