@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Generated protobuf package (produced by `make protos`)
+src/generated/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/tsconfig.tsbuildinfo
+
+# Runtime artifacts
+logs/
+tiles/
+*.log
+mission_config.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Claude working memory (progress/status across conversations)
+memory/
+
+# Local browser-test helpers
+frontend/browsercheck.mjs
+frontend/shot.mjs
+*.png
+!assets/*.png

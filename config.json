@@ -1,0 +1,14 @@
+{
+  "ports": [{ "source": "8090", "target": "8090" }],
+  "devices": [],
+  "volumes": [
+    { "type": "folder", "name": "/app/logs", "source": "<host path for packet logs>" },
+    { "type": "folder", "name": "/app/tiles", "source": "<host path for cached map tiles>" },
+    { "type": "file", "name": "/app/config/mission_config.json", "source": "<launcher: mission config override, e.g. rockets/CloudBurst-IREC2026.json>" }
+  ],
+  "flags": [],
+  "websites": [
+    "http://localhost:8090/admin",
+    "http://localhost:8090/overlay"
+  ]
+}

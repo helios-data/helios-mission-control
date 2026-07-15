@@ -1,0 +1,41 @@
+{
+  "mission_name": "CLOUDBURST",
+  "event_name": "IREC 2026",
+  "rocket_name": "CloudBurst",
+  "callsign": "",
+  "expected_apogee_m": 3048,
+  "gyro_units": "deg",
+  "ground_station": {
+    "label": "Ground Station",
+    "lat": 32.9903,
+    "lon": -106.9749,
+    "alt_m": 1401
+  },
+  "rfd900x": {
+    "min_freq_khz": 902000,
+    "max_freq_khz": 928000,
+    "net_id": 25,
+    "tx_power_dbm": 30,
+    "air_speed_kbps": 64,
+    "ecc": true,
+    "mavlink": false
+  },
+  "ui": {
+    "refresh_hz": 20,
+    "srad_stale_seconds": 5,
+    "cots_stale_seconds": 60,
+    "video_source": "webrtc-url",
+    "video_url": "http://localhost:1984/api/whep?src=cloudburst"
+  },
+  "map": {
+    "tile_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    "user_agent": "helios-mission-control/0.1 (UBC Rocket)",
+    "prewarm": {
+      "enabled": true,
+      "radius_km": 12,
+      "min_zoom": 9,
+      "max_zoom": 14
+    }
+  },
+  "notes": "ground_station lat/lon are Spaceport America placeholders; set to the actual pad before launch. callsign mirrors TeleGPS direwolf.conf MYCALL."
+}
