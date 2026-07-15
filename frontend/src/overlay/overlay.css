@@ -1,0 +1,89 @@
+/* Fixed 1920x1080 overlay layout for OBS browser sources: the page is exactly
+   one viewport tall and never scrolls/overflows (content fits or is clipped). */
+html.transparent, html.transparent body { background: transparent !important; }
+
+.overlay {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: 360px 1fr 360px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  background:
+    radial-gradient(1200px 700px at 50% -10%, var(--overlay-grad) 0%, var(--bg) 70%);
+}
+html.transparent .overlay { background: transparent; }
+
+.ov-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 8px 18px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--header-glass);
+  backdrop-filter: blur(2px);
+}
+.ov-header .logo { height: 38px; }
+.ov-mission { display: flex; flex-direction: column; }
+.ov-mission .name { font-size: 22px; font-weight: 800; letter-spacing: 0.12em; }
+.ov-mission .sub { font-size: 11px; color: var(--text-dim); letter-spacing: 0.2em; }
+.ov-clocks { margin-left: auto; display: flex; gap: 24px; align-items: center; }
+.ov-tclock { text-align: right; }
+.ov-tclock .big { font-family: var(--mono); font-size: 34px; font-weight: 700; line-height: 1; }
+.ov-tclock .lbl { font-size: 10px; color: var(--text-dim); letter-spacing: 0.2em; }
+
+/* Columns: never overflow their grid track. */
+.ov-left, .ov-right, .ov-center {
+  display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0;
+}
+
+.ov-panel {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-glass);
+  padding: 12px 14px;
+  min-height: 0;
+}
+.ov-panel > .h { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text-dim); margin-bottom: 8px; }
+
+.big-num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 700; line-height: 0.95; }
+
+/* Center column: video fills remaining height, altitude panel is fixed-size. */
+.ov-center .video-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.ov-center .altitude-panel { flex: 0 0 auto; }
+
+/* 16:9 video region that shrinks to fit the available height (height-limited). */
+.video-fit { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+.video-box {
+  position: relative; height: 100%; aspect-ratio: 16 / 9; max-width: 100%; max-height: 100%;
+  background: #05070b; border-radius: 6px; overflow: hidden;
+  display: grid; place-items: center;
+}
+.video-box.keyed { background: #00b140; } /* chroma key for OBS transparent-window */
+.video-box video { width: 100%; height: 100%; object-fit: cover; }
+.no-signal { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--text-faint); }
+.no-signal .icon { font-size: 40px; opacity: 0.5; }
+.video-live-dot {
+  position: absolute; top: 10px; left: 10px; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--err); box-shadow: 0 0 8px var(--err); animation: pulse 1.4s ease-in-out infinite;
+}
+
+.ov-footer {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 24px;
+  padding: 8px 18px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--header-glass);
+}
+.sponsors { display: flex; gap: 26px; align-items: center; overflow: hidden; }
+.sponsors img { height: 26px; opacity: 0.9; }
+.powered { margin-left: auto; font-size: 11px; letter-spacing: 0.16em; color: var(--text-dim); }
+
+.signal-row { display: flex; gap: 18px; align-items: center; }
+.awaiting { display: grid; place-items: center; color: var(--text-faint);
+  letter-spacing: 0.1em; text-transform: uppercase; font-size: 12px; }

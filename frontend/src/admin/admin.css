@@ -1,0 +1,79 @@
+/* Full-height tabbed admin: header + one tab body, no page scroll. */
+.admin-page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  overflow: hidden;
+}
+.admin-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.tab-bar { display: flex; gap: 6px; }
+.tab-bar button { padding: 5px 12px; letter-spacing: 0.06em; }
+.tab-bar button.active {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+  background: color-mix(in srgb, var(--accent-cyan) 12%, transparent);
+}
+
+/* Mission Control tab: 3-panel top row, altitude+GPS filling the middle,
+   link health pinned to the bottom (no scrolling). */
+.mc-tab { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.mc-top { display: grid; grid-template-columns: 300px 1fr 1fr 240px; gap: 10px; flex: 0 0 auto; }
+.mc-mid {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 1fr); gap: 10px;
+}
+.mc-panel { display: flex; flex-direction: column; min-height: 0; }
+.mc-fill { flex: 1; min-height: 0; }
+.mc-bottom { flex: 0 0 auto; }
+
+/* Configuration tab: config + command console. */
+.cfg-tab {
+  flex: 1; min-height: 0; overflow: auto;
+  display: grid; grid-template-columns: 360px 1fr; gap: 10px; align-content: start;
+}
+
+.admin-header .logo { height: 26px; }
+.admin-header .title { font-weight: 700; letter-spacing: 0.1em; }
+.admin-header .clock { margin-left: auto; font-family: var(--mono); font-size: 18px; }
+.span2 { grid-column: span 2; }
+.span-all { grid-column: 1 / -1; }
+/* In the config tab the command console sits in col 2 (not spanning both). */
+.cfg-tab .span-all { grid-column: auto; }
+.cfg-tab > * { min-width: 0; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-family: var(--mono); font-size: 12px; }
+.kv .k { color: var(--text-dim); }
+.kv .v { text-align: right; }
+
+/* Rocket Stats summary panel (mission tab, right of COTS). */
+.rs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 12px; }
+.rs-cell { display: flex; flex-direction: column; min-width: 0; }
+.rs-label { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); }
+.rs-val { font-family: var(--mono); font-size: 17px; line-height: 1.15; }
+.rs-sub { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.field-table-wrap { max-height: 220px; overflow: auto; }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.link-strip { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
+.link-stat { display: flex; flex-direction: column; gap: 1px; }
+.link-stat .lbl { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.toggle-row { display: flex; align-items: center; gap: 8px; justify-content: space-between;
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; }
+.rfd-form { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.rfd-form label { display: flex; flex-direction: column; gap: 2px; font-size: 10px;
+  text-transform: uppercase; color: var(--text-dim); }
+.badge-pending { color: var(--warn); }
+.badge-ok { color: var(--ok); }
+.badge-error, .badge-timeout { color: var(--err); }
+.warnbox { border: 1px solid var(--warn); background: #ffb02010; color: var(--warn);
+  padding: 6px 8px; border-radius: 3px; font-size: 11px; margin-top: 6px; }

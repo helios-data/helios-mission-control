@@ -1,0 +1,49 @@
+[project]
+name = "helios-mission-control"
+version = "0.1.0"
+description = "Web-based mission control GUI (/admin + /overlay) for UBC Rocket IREC 2026 CloudBurst, integrated with Project Helios."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "websockets>=13",
+    # Match the Helios SDK runtime (helios-python-sdk uses betterproto2).
+    "betterproto2[all]>=0.9.1",
+    "pydantic>=2.9",
+]
+
+# NOTE: the Helios Python SDK (helios-python-sdk submodule) is intentionally NOT
+# a declared dependency here, so this repo builds/runs in STANDALONE mode without
+# the private UBC Rocket repos. When the submodule is present, install it into the
+# same environment with:  uv pip install -e helios-python-sdk
+# (the `make deps` target does this automatically). Also compile protos with
+# `make protos` for LIVE mode. Neither is needed for STANDALONE.
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.7",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "grpcio-tools>=1.60",
+    "betterproto2-compiler>=0.10",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "sim"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
