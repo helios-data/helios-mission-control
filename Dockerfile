@@ -9,6 +9,11 @@ RUN npm run build
 # ---- Python runtime stage ----
 FROM python:3.13-slim
 ENV PYTHONUNBUFFERED=1
+# `uv run` auto-syncs the project before running, which would try to build+install
+# the root package (needs README.md, not shipped in the image) and fail. The venv is
+# fully prepared by the explicit `uv sync` below, so skip that implicit sync entirely.
+# Applies to both the proto compile step and the entrypoint's `uv run uvicorn`.
+ENV UV_NO_SYNC=1
 # build-essential + protobuf-compiler/libprotobuf-dev provide the system `protoc`
 # used to compile the betterproto2 protos below; git is needed for submodule/SDK installs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
