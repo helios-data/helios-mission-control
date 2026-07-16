@@ -48,20 +48,26 @@ function AttitudeRig({
     const state = srad?.flight_state ?? "STANDBY";
 
     // Full 3D attitude: integrate gyro rates + gravity-correct near 1 g.
+    // Hold the rest pose during STANDBY (and when there is no data) — do not
+    // integrate gyro bias/noise on the pad.
     if (!srad || state === "STANDBY") {
       q.current.slerp(tmp.current.identity(), Math.min(1, dt * 2));
       g.quaternion.copy(q.current);
-      if (!srad) return;
+      return;
     }
+    // Body IMU is Z-up (nose = +Z, roll about Z); Three.js render frame is Y-up.
+    // Remap both gyro and accel body -> render: (x, y, z)_body -> (x, z, -y)_render.
     const toRad = gyroUnits === "deg" ? Math.PI / 180 : 1;
+    const gx = srad.gyro.x ?? 0, gy = srad.gyro.y ?? 0, gz = srad.gyro.z ?? 0;
     const wq = tmp.current.set(
-      (srad!.gyro.x ?? 0) * toRad * dt * 0.5,
-      (srad!.gyro.y ?? 0) * toRad * dt * 0.5,
-      (srad!.gyro.z ?? 0) * toRad * dt * 0.5,
+      gx * toRad * dt * 0.5,   // render X
+      gz * toRad * dt * 0.5,   // roll about nose -> render Y
+      -gy * toRad * dt * 0.5,  // render Z
       1,
     ).normalize();
     q.current.multiply(wq).normalize();
-    const ax = srad!.accel.x ?? 0, ay = srad!.accel.y ?? 1, az = srad!.accel.z ?? 0;
+    // 1 g default now on the body-up axis (Z); remap to render frame.
+    const ax = srad.accel.x ?? 0, ay = srad.accel.z ?? 1, az = -(srad.accel.y ?? 0);
     const amag = Math.hypot(ax, ay, az);
     if (amag > 0.7 && amag < 1.3) {
       const measuredUp = new THREE.Vector3(ax, ay, az).normalize();
