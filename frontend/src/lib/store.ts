@@ -89,7 +89,7 @@ export class MissionStore {
     const ground = sradItems.at(-1)?.ground_altitude ?? 0;
     for (const c of cotsItems) {
       const p = c.position;
-      if (p?.lon != null && p?.lat != null) push(this.cotsTrack, [p.lon, p.lat], MAX_TRACK);
+      if (hasGpsFix(p?.lon, p?.lat)) push(this.cotsTrack, [p!.lon!, p!.lat!], MAX_TRACK);
       if (p?.altitude_m != null) this._lastCotsAlt = p.altitude_m - ground;
     }
     if (cotsItems.length) this.cots = cotsItems.at(-1)!;
@@ -173,7 +173,7 @@ export class MissionStore {
     push(this.alt.baroAvg, f.altitude_agl_m, MAX_POINTS);
     push(this.alt.kf, (f.kf_altitude ?? 0) - (f.ground_altitude ?? 0), MAX_POINTS);
     push(this.alt.cots, this._lastCotsAlt, MAX_POINTS);
-    if (f.gps.lon !== null && f.gps.lat !== null) {
+    if (hasGpsFix(f.gps.lon, f.gps.lat)) {
       push(this.sradTrack, [f.gps.lon, f.gps.lat] as [number, number], MAX_TRACK);
     }
   }
@@ -186,8 +186,8 @@ export class MissionStore {
       const ground = this.config.ground_station?.alt_m ?? this.srad?.ground_altitude ?? 0;
       this._lastCotsAlt = p.altitude_m - ground;
     }
-    if (p && p.lon !== null && p.lat !== null) {
-      push(this.cotsTrack, [p.lon, p.lat] as [number, number], MAX_TRACK);
+    if (hasGpsFix(p?.lon, p?.lat)) {
+      push(this.cotsTrack, [p!.lon!, p!.lat!] as [number, number], MAX_TRACK);
     }
   }
 
@@ -217,6 +217,13 @@ export class MissionStore {
 function push<T>(arr: T[], v: T, max: number) {
   arr.push(v);
   if (arr.length > max) arr.shift();
+}
+
+// A GPS fix is only valid when both lon and lat are present and non-zero. The
+// flight computer reports 0/0 as the default before it acquires a lock, so we
+// must not plot those or the track snaps to null island off West Africa.
+function hasGpsFix(lon: number | null | undefined, lat: number | null | undefined): boolean {
+  return lon != null && lat != null && lon !== 0 && lat !== 0;
 }
 
 const stores: Partial<Record<string, MissionStore>> = {};

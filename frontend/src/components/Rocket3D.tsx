@@ -47,16 +47,34 @@ function AttitudeRig({
     const srad = store.srad;
     const state = srad?.flight_state ?? "STANDBY";
 
-    // Full 3D attitude: integrate gyro rates + gravity-correct near 1 g.
-    // Hold the rest pose during STANDBY (and when there is no data) — do not
-    // integrate gyro bias/noise on the pad.
+    // "Up" (nose) is the direction opposite gravity. Body IMU is Z-up (nose = +Z);
+    // Three.js render frame is Y-up. Remap accel body -> render
+    // ((x, y, z)_body -> (x, z, -y)_render) and negate to get up = -gravity. Accel
+    // is in m/s^2 (~9.81 at 1 g). At rest upright this is ~(0, +1, 0)_render.
+    const upRender = new THREE.Vector3(
+      -(srad?.accel.x ?? 0),
+      -(srad?.accel.z ?? 0),
+      srad?.accel.y ?? 0,
+    );
+
+    // Not armed/in flight yet (or no data): calibrate attitude straight from the
+    // gravity vector. Pure orientation, no integration -> no drift on the bench,
+    // and the model tilts with the airframe as you move it.
     if (!srad || state === "STANDBY") {
-      q.current.slerp(tmp.current.identity(), Math.min(1, dt * 2));
+      if (srad && upRender.lengthSq() > 1e-6) {
+        const target = new THREE.Quaternion().setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0), upRender.normalize(),
+        );
+        q.current.slerp(target, Math.min(1, dt * 4));
+      } else {
+        q.current.slerp(tmp.current.identity(), Math.min(1, dt * 2));
+      }
       g.quaternion.copy(q.current);
       return;
     }
-    // Body IMU is Z-up (nose = +Z, roll about Z); Three.js render frame is Y-up.
-    // Remap both gyro and accel body -> render: (x, y, z)_body -> (x, z, -y)_render.
+
+    // In flight: integrate gyro rates, then gravity-correct tilt when accel is
+    // near 1 g (not maneuvering hard). Remap gyro body -> render too.
     const toRad = gyroUnits === "deg" ? Math.PI / 180 : 1;
     const gx = srad.gyro.x ?? 0, gy = srad.gyro.y ?? 0, gz = srad.gyro.z ?? 0;
     const wq = tmp.current.set(
@@ -66,11 +84,10 @@ function AttitudeRig({
       1,
     ).normalize();
     q.current.multiply(wq).normalize();
-    // 1 g default now on the body-up axis (Z); remap to render frame.
-    const ax = srad.accel.x ?? 0, ay = srad.accel.z ?? 1, az = -(srad.accel.y ?? 0);
-    const amag = Math.hypot(ax, ay, az);
-    if (amag > 0.7 && amag < 1.3) {
-      const measuredUp = new THREE.Vector3(ax, ay, az).normalize();
+    // Accel is m/s^2 -> compare in g. Only trust it as "up" near 1 g.
+    const gRatio = upRender.length() / 9.81;
+    if (gRatio > 0.7 && gRatio < 1.3) {
+      const measuredUp = upRender.normalize();   // already = -gravity (up)
       const worldUpInBody = new THREE.Vector3(0, 1, 0).applyQuaternion(q.current.clone().invert());
       const corr = new THREE.Quaternion().setFromUnitVectors(worldUpInBody, measuredUp);
       q.current.multiply(new THREE.Quaternion().slerpQuaternions(new THREE.Quaternion(), corr, 0.02));
