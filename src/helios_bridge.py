@@ -23,6 +23,12 @@ COTS_ADDRESS = "Helios.Services.TeleGPS"
 COTS_EVENT = "aprs"
 NODE_URI = "Helios.Services.MissionControl"
 
+# Bound the one-shot seed get_event. If a component (e.g. TeleGPS) hasn't
+# registered its address yet, the core replies with event_error and the SDK
+# never resolves the pending future — so an unbounded seed would hang forever
+# and the subscriptions below (in the gather) would never start. See _seed_latest.
+SEED_TIMEOUT_S = 2.0
+
 
 def _load_proto_classes() -> tuple[Any, Any]:
     """Import the generated betterproto packet classes (raises if missing)."""
@@ -93,12 +99,15 @@ class HeliosBridge:
              self.state.record_cots_error),
         ):
             try:
-                ev = await self.client.get_event(address=addr, event_name=event)
+                ev = await asyncio.wait_for(
+                    self.client.get_event(address=addr, event_name=event),
+                    timeout=SEED_TIMEOUT_S,
+                )
                 if ev and getattr(ev, "data", None):
                     frame = parse(ev.data)
                     if frame is not None:
                         await self.hub.broadcast(ingest(frame))
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - incl. TimeoutError; count + move on so subscriptions start
                 on_err()
 
     async def _subscribe_srad(self) -> None:
