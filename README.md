@@ -80,9 +80,10 @@ See [`MISSION_CONTROL_PLAN.md`](MISSION_CONTROL_PLAN.md) for the full design.
 ## Configuration
 
 `mission_config.json` (repo root) is the **base** source of truth for callsign,
-RFD900x settings, ground-station coordinates, UI refresh/stale timeouts, and the
-`video_source` mode. Editable subset is exposed on the admin console; changes are
-persisted and broadcast.
+RFD900x settings, ground-station coordinates, and UI refresh/stale timeouts.
+Editable subset is exposed on the admin console; changes are persisted and
+broadcast. (`ui.video_source` is **not** a config knob — the backend derives it
+from the run mode; see [Video](#video-overlay).)
 
 **Launcher override (Open Question 3).** helios-launcher can supply the
 per-rocket parameters instead, by **linking a file** into the container (declared
@@ -102,20 +103,20 @@ bundled `mission_config.json` for testing. See
 ## Video (`/overlay`)
 
 The onboard VTX feed enters the PC as a **USB capture card (UVC device)**. Capture
-cards are single-consumer, so three modes are supported via `ui.video_source`:
+cards are single-consumer, so the method is chosen by **run mode** (the backend
+sets `ui.video_source` in the served config — it is not user-editable):
 
-- `transparent-window` *(default)* — overlay leaves a chroma-keyed region; OBS
-  owns the card and composites the feed behind it. Most robust for the stream.
-- `local-capture` — page grabs the device via `getUserMedia()` (localhost only).
-  **Not usable in OBS**: OBS's embedded browser blocks `getUserMedia`, so this
-  mode fails with `NotAllowedError` as a browser source. Use `transparent-window`
-  or `webrtc-url` for OBS; `local-capture` is for viewing on the host machine.
-- `webrtc-url` — a **go2rtc** sidecar owns `/dev/videoX` and restreams it as
-  WebRTC; the overlay plays it via a built-in **WHEP client** (`src/lib/whep.ts`)
-  and OBS can pull the same stream — multiple consumers, one device owner.
+- `webrtc-url` *(production / LIVE)* — a separate **go2rtc Video node** (its own
+  launcher container) owns `/dev/videoX` and restreams it as WebRTC. The overlay
+  plays it via a built-in **WHEP client** (`src/lib/whep.ts`) from `ui.video_url`
+  (e.g. `http://localhost:1984/api/whep?src=cloudburst`), and OBS can pull the
+  same stream — multiple consumers, one device owner.
+- `local-capture` *(STANDALONE only)* — no go2rtc node is running, so the page
+  grabs the device directly via `getUserMedia()` (localhost only). **Not usable
+  in OBS**: OBS's embedded browser blocks `getUserMedia`.
 
-All three fall back to a designed **NO SIGNAL** panel (`webrtc-url` auto-retries
-every 3 s). The public livestream must never depend on the GUI being healthy.
+Both fall back to a designed **NO SIGNAL** panel (`webrtc-url` auto-retries every
+3 s). The public livestream must never depend on the GUI being healthy.
 
 ### go2rtc sidecar (webrtc-url mode)
 

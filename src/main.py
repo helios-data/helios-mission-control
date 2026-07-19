@@ -152,6 +152,14 @@ async def lifespan(app: FastAPI):
     config, config_save_path, config_writeback = resolve_config()
     log_dir = os.getenv("LOG_DIR", str(ROOT / "logs"))
 
+    # Video method is decided by run mode, not by config files:
+    #   STANDALONE (no Helios/go2rtc) -> read the capture card in-browser
+    #   otherwise                     -> pull the go2rtc Video node's WHEP stream
+    standalone = os.getenv("STANDALONE") == "1"
+    config.setdefault("ui", {})["video_source"] = (
+        "local-capture" if standalone else "webrtc-url"
+    )
+
     state = MissionState(config)
     hub = ConnectionHub()
     logger = PacketLogger(log_dir)
@@ -174,7 +182,6 @@ async def lifespan(app: FastAPI):
     if gs and gs.get("lat") is not None and gs.get("lon") is not None:
         prewarm_task = asyncio.create_task(tiles.prewarm(gs["lat"], gs["lon"]), name="tile-prewarm")
 
-    standalone = os.getenv("STANDALONE") == "1"
     if standalone:
         from .standalone import run_standalone
 

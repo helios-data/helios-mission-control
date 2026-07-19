@@ -149,8 +149,11 @@ export interface MissionConfig {
     refresh_hz?: number;
     srad_stale_seconds?: number;
     cots_stale_seconds?: number;
-    video_source?: "transparent-window" | "local-capture" | "webrtc-url";
-    video_url?: string; // WHEP endpoint for webrtc-url mode (go2rtc sidecar)
+    // Set by the backend from run mode, not user-edited:
+    //   webrtc-url    -> WHEP from the go2rtc Video node (production)
+    //   local-capture -> browser reads the capture card directly (STANDALONE)
+    video_source?: "webrtc-url" | "local-capture";
+    video_url?: string; // WHEP endpoint for webrtc-url mode (go2rtc node)
   };
 }
 
