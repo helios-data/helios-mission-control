@@ -115,10 +115,12 @@ export function App() {
           <div style={{ display: "flex", gap: 20, marginTop: 12 }}>
             <Stat label="VELOCITY" value={hasSrad ? fmt(s!.kf_velocity, 0) : "—"} unit="m/s" size={34} />
             <Stat label="MACH" value={hasSrad ? fmt(s!.mach, 2) : "—"} size={34} />
+            <Stat label="G-FORCE" value={hasSrad && s!.g_force != null ? fmt(s!.g_force, 1) : "—"} unit="g" size={34} />
           </div>
           <div style={{ display: "flex", gap: 20, marginTop: 8 }}>
             <Stat label="MAX SPEED" value={fmt(m?.max_velocity_ms ?? 0, 0)} unit="m/s" size={18} />
             <Stat label="MAX MACH" value={fmt(m?.max_mach ?? 0, 2)} size={18} />
+            <Stat label="MAX G" value={fmt(m?.max_g ?? 0, 1)} unit="g" size={18} />
           </div>
         </Panel>
       </div>

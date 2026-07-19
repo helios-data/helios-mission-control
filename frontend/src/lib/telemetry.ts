@@ -45,6 +45,7 @@ export interface SradFrame {
   altitude_agl_m: number;
   altitude_degraded: boolean;
   mach: number;
+  g_force: number | null; // magnitude of accel vector, in g
   t_plus_s: number | null;
 }
 
@@ -118,6 +119,7 @@ export interface MissionFrame {
   max_altitude_msl_m: number;
   max_velocity_ms: number;
   max_mach: number;
+  max_g: number;
   apogee: { altitude_agl_m: number; at_epoch: number; t_plus_s: number | null } | null;
   events: MissionEvent[];
   transitions: Transition[];

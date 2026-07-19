@@ -25,7 +25,7 @@ mirrors it. `role=overlay` connections receive only the read-only frame types
   "gps": {"lat":32.99,"lon":-106.97,"alt":2401.0,"speed":180.0,"sats":12,"fix":3},
   // derived server-side (MissionState.ingest_srad):
   "altitude_msl_m": 2401.0, "altitude_agl_m": 1000.0,
-  "altitude_degraded": false, "mach": 0.54, "t_plus_s": 12.3
+  "altitude_degraded": false, "mach": 0.54, "g_force": 1.0, "t_plus_s": 12.3
 }
 ```
 Primary altitude follows §3.1: mean of healthy baros; one healthy → that one;
@@ -55,7 +55,7 @@ neither → `kf_altitude` with `altitude_degraded: true`. AGL = MSL − `ground_
 ```jsonc
 { "type": "mission", "flight_state":"ASCENT", "t_plus_s":12.3, "t_minus_s":null,
   "max_altitude_agl_m": 1000.0, "max_altitude_msl_m": 2401.0,
-  "max_velocity_ms": 235.0, "max_mach": 0.72,
+  "max_velocity_ms": 235.0, "max_mach": 0.72, "max_g": 8.4,
   "apogee": {"altitude_agl_m":…, "at_epoch":…, "t_plus_s":…}|null,
   "transitions": [{"state":"ASCENT","at_epoch":…,"t_plus_s":0.0}, …] }
 ```

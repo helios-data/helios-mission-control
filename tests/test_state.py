@@ -57,10 +57,13 @@ def test_liftoff_starts_t_plus_and_records_transition():
 
 def test_max_trackers_and_apogee_detection():
     st = MissionState(CONFIG)
-    st.ingest_srad(_srad(flight_state="ASCENT", baro0={"healthy": True, "altitude": 4000.0},
-                         baro1={"healthy": True, "altitude": 4000.0}, kf_velocity=250.0))
+    f = st.ingest_srad(_srad(flight_state="ASCENT", baro0={"healthy": True, "altitude": 4000.0},
+                             baro1={"healthy": True, "altitude": 4000.0}, kf_velocity=250.0,
+                             accel={"x": 0.0, "y": 8.0, "z": 0.0}))
     assert st.max_altitude_agl_m == pytest.approx(4000.0 - 1401.0)
     assert st.max_velocity_ms == pytest.approx(250.0)
+    assert f["g_force"] == pytest.approx(8.0)
+    assert st.max_g == pytest.approx(8.0)
     st.ingest_srad(_srad(flight_state="DROGUE_DESCENT",
                          baro0={"healthy": True, "altitude": 3900.0},
                          baro1={"healthy": True, "altitude": 3900.0}))

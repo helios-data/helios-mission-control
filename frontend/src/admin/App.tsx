@@ -175,9 +175,12 @@ function RocketStatsPanel({ downrange }: { downrange: string }) {
   const maxV = m?.max_velocity_ms ?? 0;
   const maxAgl = m?.max_altitude_agl_m ?? 0;
   const vv = s?.kf_velocity ?? null;
+  const g = s?.g_force ?? null;
   return (
     <Panel title="Rocket Stats">
       <div className="rs-grid">
+        <StatCell label="Current G" value={g == null ? "—" : `${fmt(g, 1)} g`} />
+        <StatCell label="Max G" value={`${fmt(m?.max_g ?? 0, 1)} g`} />
         <StatCell label="Max speed" value={`${fmt(maxV, 0)} m/s`} sub={`${fmt(maxV * M_TO_FT, 0)} ft/s`} />
         <StatCell label="Max Mach" value={fmt(m?.max_mach ?? 0, 2)} />
         <StatCell label="Max alt AGL" value={`${fmt(maxAgl, 0)} m`} sub={feet(maxAgl)} />

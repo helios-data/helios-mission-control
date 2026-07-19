@@ -13,6 +13,7 @@ depends on protobuf being importable.
 
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from collections.abc import Callable
@@ -132,6 +133,7 @@ class MissionState:
         self.max_altitude_msl_m = 0.0
         self.max_velocity_ms = 0.0
         self.max_mach = 0.0
+        self.max_g = 0.0
         self.apogee: dict[str, Any] | None = None
 
         # Mission events (one per type) = FALCON firmware flight-state
@@ -165,6 +167,16 @@ class MissionState:
         vel = float(srad.get("kf_velocity") or 0.0)
         srad["mach"] = round(mach_estimate(abs(vel), msl), 3)
 
+        # G-force = magnitude of the accel vector (accel is in g including gravity).
+        accel = srad.get("accel", {})
+        ax, ay, az = accel.get("x"), accel.get("y"), accel.get("z")
+        if ax is not None and ay is not None and az is not None:
+            g_force = math.hypot(ax, ay, az)
+            srad["g_force"] = round(g_force, 3)
+        else:
+            g_force = None
+            srad["g_force"] = None
+
         self._update_flight_state(srad.get("flight_state", "STANDBY"))
 
         # Max trackers (only count ascent-region positive altitude for sanity)
@@ -176,6 +188,8 @@ class MissionState:
             self.max_velocity_ms = abs(vel)
         if srad["mach"] > self.max_mach:
             self.max_mach = srad["mach"]
+        if g_force is not None and g_force > self.max_g:
+            self.max_g = g_force
         self._detect_apogee(agl)
         self._detect_events(srad, agl)
 
@@ -290,6 +304,7 @@ class MissionState:
             "max_altitude_msl_m": round(self.max_altitude_msl_m, 2),
             "max_velocity_ms": round(self.max_velocity_ms, 2),
             "max_mach": round(self.max_mach, 3),
+            "max_g": round(self.max_g, 2),
             "apogee": self.apogee,
             "events": self.events,
             "transitions": [t.__dict__ for t in self.transitions[-32:]],
