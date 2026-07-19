@@ -103,15 +103,15 @@ an `UplinkPacket`.
 
 **Why:** This service owns the ground-station RFD900x serial port and is
 read-only today. Mission Control publishes `GroundCommand` bytes with
-`event_name="command"` on `Helios.FALCON.srad_telemetry`; this service must consume
+`event_name="command"` on `Helios.FALCON.SRAD_Telemetry`; this service must consume
 them, act, and reply with `command_ack`.
 
 **Event routing (must match Mission Control):**
 
 | Command | Publish (from MC) | This service does | Reply |
 |---|---|---|---|
-| `rfd_config` | `command` on `Helios.FALCON.srad_telemetry` | AT-command the **local** modem | `command_ack` |
-| `camera` | `command` on `Helios.FALCON.srad_telemetry` | serialize `UplinkPacket`, COBS+CRC, TX over RF | `command_ack` (ground TX ok) |
+| `rfd_config` | `command` on `Helios.FALCON.SRAD_Telemetry` | AT-command the **local** modem | `command_ack` |
+| `camera` | `command` on `Helios.FALCON.SRAD_Telemetry` | serialize `UplinkPacket`, COBS+CRC, TX over RF | `command_ack` (ground TX ok) |
 
 **Sketch** (async SDK; adapt to the service's existing structure):
 
@@ -119,7 +119,7 @@ them, act, and reply with `command_ack`.
 from helios import HeliosClient
 from src.generated import GroundCommand, CommandAck, UplinkPacket  # after PR 1 + make protos
 
-ADDRESS = "Helios.FALCON.srad_telemetry"
+ADDRESS = "Helios.FALCON.SRAD_Telemetry"
 
 async def command_loop(client, serial_port):
     async with client.subscribe_event(address=ADDRESS, event_name="command") as events:

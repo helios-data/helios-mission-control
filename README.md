@@ -17,8 +17,8 @@ Two telemetry streams are consumed (§1.2 of the build plan):
 
 | Stream | Address | Event | Payload |
 |---|---|---|---|
-| SRAD | `Helios.FALCON.srad_telemetry` | `telemetry` | `TelemetryPacket` (falcon-protos) |
-| COTS | `Helios.FALCON.aprs_telemetry` | `aprs` | `AprsPacket` (helios-protos) |
+| SRAD | `Helios.FALCON.SRAD_Telemetry` | `telemetry` | `TelemetryPacket` (falcon-protos) |
+| COTS | `Helios.FALCON.APRS_Telemetry` | `aprs` | `AprsPacket` (helios-protos) |
 
 ## Quick start (no hardware, no submodules)
 

@@ -17,9 +17,9 @@ from .telemetry import MIN_PACKET_BYTES, normalize_cots, normalize_srad
 
 log = logging.getLogger("mission-control.bridge")
 
-SRAD_ADDRESS = "Helios.FALCON.srad_telemetry"
+SRAD_ADDRESS = "Helios.FALCON.SRAD_Telemetry"
 SRAD_EVENT = "telemetry"
-COTS_ADDRESS = "Helios.FALCON.aprs_telemetry"
+COTS_ADDRESS = "Helios.FALCON.APRS_Telemetry"
 COTS_EVENT = "aprs"
 NODE_URI = "Helios.Services.MissionControl"
 
