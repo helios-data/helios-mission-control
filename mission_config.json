@@ -24,7 +24,7 @@
     "refresh_hz": 20,
     "srad_stale_seconds": 5,
     "cots_stale_seconds": 60,
-    "video_url": "http://localhost:1984/api/whep?src=cloudburst"
+    "video_url": "http://localhost:1984/api/webrtc?src=cloudburst"
   },
   "map": {
     "tile_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
