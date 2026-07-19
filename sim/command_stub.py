@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-COMMAND_ADDRESS = "Helios.FALCON.Telemetry"
+COMMAND_ADDRESS = "Helios.FALCON.srad_telemetry"
 
 
 async def main() -> None:

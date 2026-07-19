@@ -2,8 +2,8 @@
 
 Publishes a synthetic full CloudBurst flight to a live Helios core so the whole
 mission-control stack can be exercised without hardware:
-  - SRAD  TelemetryPacket on Helios.FALCON.Telemetry / "telemetry" at N Hz
-  - COTS  AprsPacket       on Helios.Services.TeleGPS / "aprs" at ~0.2 Hz
+  - SRAD  TelemetryPacket on Helios.FALCON.srad_telemetry / "telemetry" at N Hz
+  - COTS  AprsPacket       on Helios.FALCON.aprs_telemetry / "aprs" at ~0.2 Hz
 
 Requires the SDK + protos (make deps && make protos). It reuses the same
 kinematic model as STANDALONE mode (src.flight_model) so the two agree.
@@ -102,14 +102,14 @@ async def main() -> None:
         await client.publish_event(
             event_name="telemetry",
             data=bytes(_build_telemetry(TelemetryPacket, frame)),
-            override_address="Helios.FALCON.Telemetry",
+            override_address="Helios.FALCON.srad_telemetry",
         )
         if tick % aprs_every == 0:
             aprs = flight.aprs_frame(args.callsign)
             await client.publish_event(
                 event_name="aprs",
                 data=bytes(_build_aprs(AprsPacket, AprsPosition, aprs)),
-                override_address="Helios.Services.TeleGPS",
+                override_address="Helios.FALCON.aprs_telemetry",
             )
         tick += 1
         await asyncio.sleep(dt)
