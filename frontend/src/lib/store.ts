@@ -222,7 +222,7 @@ function push<T>(arr: T[], v: T, max: number) {
 // A GPS fix is only valid when both lon and lat are present and non-zero. The
 // flight computer reports 0/0 as the default before it acquires a lock, so we
 // must not plot those or the track snaps to null island off West Africa.
-function hasGpsFix(lon: number | null | undefined, lat: number | null | undefined): boolean {
+export function hasGpsFix(lon: number | null | undefined, lat: number | null | undefined): boolean {
   return lon != null && lat != null && lon !== 0 && lat !== 0;
 }
 

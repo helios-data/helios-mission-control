@@ -3,7 +3,7 @@ import { Panel } from "../components/Panel";
 import { StateBadge } from "../components/StateBadge";
 import { AltitudeChart } from "../components/AltitudeChart";
 import { GpsMap } from "../components/GpsMap";
-import { getStore, useStore } from "../lib/store";
+import { getStore, useStore, hasGpsFix } from "../lib/store";
 import { sourceState, type DataState } from "../lib/fallback";
 import { useTheme } from "../lib/theme";
 import { ThemeToggle } from "../components/ThemeToggle";
@@ -78,8 +78,10 @@ function MissionTab({ theme, sradDs, cotsDs }: { theme: "dark" | "light"; sradDs
   const gs = cfg.ground_station;
   const gps = store.srad?.gps;
   let dist = "—", bearing = "—";
-  if (gs && gps?.lat != null && gps?.lon != null) {
-    const r = haversine(gs.lat, gs.lon, gps.lat, gps.lon);
+  // 0,0 is the flight computer's pre-lock default, not a real position — don't
+  // let it produce a bogus ~thousands-of-km downrange reading.
+  if (gs && hasGpsFix(gps?.lon, gps?.lat)) {
+    const r = haversine(gs.lat, gs.lon, gps!.lat!, gps!.lon!);
     dist = `${fmt(r.distance, 0)} m`;
     bearing = `${fmt(r.bearing, 0)}°`;
   }

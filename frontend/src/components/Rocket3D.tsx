@@ -47,10 +47,10 @@ function AttitudeRig({
     const srad = store.srad;
     const state = srad?.flight_state ?? "STANDBY";
 
-    // "Up" (nose) is the direction opposite gravity. Body IMU is Z-up (nose = +Z);
-    // Three.js render frame is Y-up. Remap accel body -> render
-    // ((x, y, z)_body -> (x, z, -y)_render) and negate to get up = -gravity. Accel
-    // is in m/s^2 (~9.81 at 1 g). At rest upright this is ~(0, +1, 0)_render.
+    // Body IMU is Z-axial (nose = +Z) and reports the gravity vector (~-1 g along
+    // the nose at rest, i.e. accel points "down"). "Up" = -gravity = -accel. Three.js
+    // render frame is Y-up, so remap body -> render ((x, y, z)_body -> (x, z, -y)_render)
+    // and negate. Accel is m/s^2 (~9.81 at 1 g); at rest upright this is ~(0, +9.81, 0)_render.
     const upRender = new THREE.Vector3(
       -(srad?.accel.x ?? 0),
       -(srad?.accel.z ?? 0),

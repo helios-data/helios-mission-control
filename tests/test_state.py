@@ -62,8 +62,9 @@ def test_max_trackers_and_apogee_detection():
                              accel={"x": 0.0, "y": 8.0, "z": 0.0}))
     assert st.max_altitude_agl_m == pytest.approx(4000.0 - 1401.0)
     assert st.max_velocity_ms == pytest.approx(250.0)
-    assert f["g_force"] == pytest.approx(8.0)
-    assert st.max_g == pytest.approx(8.0)
+    # accel is m/s^2; g_force is the magnitude converted to g (frame is rounded to 3dp).
+    assert f["g_force"] == pytest.approx(8.0 / 9.80665, abs=1e-3)
+    assert st.max_g == pytest.approx(8.0 / 9.80665)
     st.ingest_srad(_srad(flight_state="DROGUE_DESCENT",
                          baro0={"healthy": True, "altitude": 3900.0},
                          baro1={"healthy": True, "altitude": 3900.0}))

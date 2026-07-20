@@ -35,6 +35,13 @@ async def run_standalone(state: MissionState, hub: ConnectionHub) -> None:
     aprs_period_ticks = max(1, int(hz / 0.2))  # ~0.2 Hz APRS
     housekeeping_ticks = max(1, int(hz / 4))    # link/mission ~4 Hz
 
+    # Deadline-based pacing: sleep only for the time left until the next tick, not
+    # a full `dt` after the work. Sleeping `dt` *after* ingest+broadcast makes the
+    # true period `work + dt`, so the delivered rate lands well under `hz` (e.g.
+    # ~15 Hz for a nominal 20). Advancing a fixed deadline holds the real rate at
+    # `hz` as long as per-tick work stays under `dt`.
+    loop = asyncio.get_running_loop()
+    next_deadline = loop.time()
     while True:
         frame = flight.step(dt)
         await hub.broadcast(state.ingest_srad(frame))
@@ -47,4 +54,11 @@ async def run_standalone(state: MissionState, hub: ConnectionHub) -> None:
             await hub.broadcast(state.mission_snapshot())
 
         tick += 1
-        await asyncio.sleep(dt)
+        next_deadline += dt
+        delay = next_deadline - loop.time()
+        if delay < 0:
+            # Fell behind (work exceeded dt); reset the phase so we don't emit a
+            # catch-up burst that would spike the measured rate.
+            next_deadline = loop.time()
+            delay = 0
+        await asyncio.sleep(delay)

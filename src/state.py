@@ -25,6 +25,11 @@ from .constants import mach_estimate
 SRAD_RING_DEFAULT = 10_000
 COTS_RING_DEFAULT = 5_000
 
+# Standard gravity. The FALCON IMU reports specific force in m/s^2 (~9.81 at
+# rest, i.e. 1 g), matching the 3D-attitude convention in Rocket3D.tsx. We divide
+# the accel magnitude by this to report G-force in g.
+STANDARD_GRAVITY = 9.80665
+
 # FALCON firmware flight states annotated on entry (STANDBY = pre-launch, skipped).
 _FLIGHT_STATE_EVENTS = ("ASCENT", "MACH_LOCK", "DROGUE_DESCENT", "MAIN_DESCENT", "LANDED")
 
@@ -167,11 +172,12 @@ class MissionState:
         vel = float(srad.get("kf_velocity") or 0.0)
         srad["mach"] = round(mach_estimate(abs(vel), msl), 3)
 
-        # G-force = magnitude of the accel vector (accel is in g including gravity).
+        # G-force = magnitude of the accel vector, converted from m/s^2 to g. The
+        # IMU reports specific force (gravity + thrust), so this reads ~1 g at rest.
         accel = srad.get("accel", {})
         ax, ay, az = accel.get("x"), accel.get("y"), accel.get("z")
         if ax is not None and ay is not None and az is not None:
-            g_force = math.hypot(ax, ay, az)
+            g_force = math.hypot(ax, ay, az) / STANDARD_GRAVITY
             srad["g_force"] = round(g_force, 3)
         else:
             g_force = None

@@ -16,7 +16,7 @@ mirrors it. `role=overlay` connections receive only the read-only frame types
 {
   "type": "srad", "counter": 1234, "timestamp_ms": 45678,
   "flight_state": "ASCENT",
-  "accel": {"x":0.0,"y":0.0,"z":1.0}, "gyro": {"x":0.0,"y":0.0,"z":120.0},
+  "accel": {"x":0.0,"y":0.0,"z":-9.81}, "gyro": {"x":0.0,"y":0.0,"z":120.0},
   "kf_altitude": 2401.0, "kf_velocity": 180.0,
   "kf_altitude_var": 0.5, "kf_velocity_var": 0.2,
   "baro0": {"healthy":true,"pressure":null,"temp":20.0,"altitude":2400.0,"nis":0.4,"faults":0},
@@ -30,6 +30,10 @@ mirrors it. `role=overlay` connections receive only the read-only frame types
 ```
 Primary altitude follows §3.1: mean of healthy baros; one healthy → that one;
 neither → `kf_altitude` with `altitude_degraded: true`. AGL = MSL − `ground_altitude`.
+`accel` is the gravity vector in **m/s²**, Z-axial (nose = +Z); at rest the axial
+reads **−1 g** (`z ≈ −9.81`), so "up" = −accel. Derived `g_force` is the vector
+magnitude converted to **g** (`|accel| / 9.80665`, ~1 g at rest). `gyro` is deg/s;
+`gyro.z` is roll about the nose.
 
 ## `cots` (per TeleGPS AprsPacket)
 ```jsonc

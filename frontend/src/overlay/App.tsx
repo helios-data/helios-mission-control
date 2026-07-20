@@ -5,12 +5,12 @@ import { GpsMap } from "../components/GpsMap";
 import { Rocket3D } from "../components/Rocket3D";
 import { SignalDot } from "../components/SignalDot";
 import { EventTicker } from "../components/EventTicker";
-import { getStore, useStore } from "../lib/store";
+import { getStore, useStore, hasGpsFix } from "../lib/store";
 import { sourceState, type DataState } from "../lib/fallback";
 import { useTheme } from "../lib/theme";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { stateColor } from "../lib/colors";
-import { clock, feet, fmt, fmtLatLon, M_TO_FT } from "../lib/units";
+import { clock, feet, fmt, fmtLatLon, G_MS2, M_TO_FT } from "../lib/units";
 import { VideoPanel } from "./VideoPanel";
 
 const store = getStore("overlay");
@@ -64,12 +64,22 @@ export function App() {
   const hasSrad = sradDs.status !== "no_data" && s != null;
   const stale = sradDs.status === "stale";
 
-  // Tilt from vertical, estimated from the gravity vector when |a| ≈ 1 g.
+  // A GPS fix at 0,0 is the flight computer's default before lock — not a real
+  // fix. Only show the map once we have a genuine (non-0,0) coordinate from
+  // either source (tracks already exclude 0,0, so a non-empty track counts).
+  const hasGps = hasGpsFix(s?.gps.lon, s?.gps.lat)
+    || hasGpsFix(store.cots?.position?.lon, store.cots?.position?.lat)
+    || store.sradTrack.length > 0 || store.cotsTrack.length > 0;
+
+  // Tilt of the nose (body +Z, axial) from vertical, from the gravity vector when
+  // |a| ≈ 1 g. The IMU reports gravity, so "up" = -accel; at rest az ≈ -1 g and
+  // tilt ≈ 0°. Accel is m/s^2 (~9.81 at rest), so gate the magnitude in g.
   let tiltDeg = "—";
   if (s) {
-    const ax = s.accel.x ?? 0, ay = s.accel.y ?? 1, az = s.accel.z ?? 0;
+    const ax = s.accel.x ?? 0, ay = s.accel.y ?? 0, az = s.accel.z ?? -G_MS2;
     const a = Math.hypot(ax, ay, az);
-    if (a > 0.7 && a < 1.3) tiltDeg = fmt((Math.acos(Math.max(-1, Math.min(1, ay / a))) * 180) / Math.PI, 0);
+    const g = a / G_MS2;
+    if (g > 0.7 && g < 1.3) tiltDeg = fmt((Math.acos(Math.max(-1, Math.min(1, -az / a))) * 180) / Math.PI, 0);
   }
 
   const tClock = m?.t_plus_s != null ? clock(m.t_plus_s, true)
@@ -106,7 +116,7 @@ export function App() {
           <Rocket3D store={store} height={260} hasData={hasSrad}
             gyroUnits={cfg.gyro_units ?? "deg"} />
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-            <Stat label="ROLL RATE" value={hasSrad ? `${fmt(s!.gyro.y, 0)}` : "—"} unit="°/s" size={20} />
+            <Stat label="ROLL RATE" value={hasSrad ? `${fmt(s!.gyro.z, 0)}` : "—"} unit="°/s" size={20} />
             <Stat label="TILT" value={tiltDeg} unit="°" size={20} />
           </div>
         </Panel>
@@ -157,7 +167,7 @@ export function App() {
       {/* RIGHT */}
       <div className="ov-right">
         <Panel h="GPS" stale={cotsDs.status === "stale" && sradDs.status !== "live"}>
-          {sradDs.status === "no_data" && cotsDs.status === "no_data" ? (
+          {!hasGps ? (
             <div className="awaiting" style={{ height: 220 }}>No GPS fix</div>
           ) : (
             <GpsMap store={store} height={220} theme={theme} />
@@ -178,12 +188,6 @@ export function App() {
       </div>
 
       <footer className="ov-footer">
-        <div className="sponsors">
-          <img
-            src={theme === "light" ? "/brand/UBCRocket_Logo_Coloured.png" : "/brand/UBCRocket_Logo_White.png"}
-            alt="UBC Rocket"
-          />
-        </div>
         <span className="powered">POWERED BY PROJECT HELIOS</span>
       </footer>
     </div>

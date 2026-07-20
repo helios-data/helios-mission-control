@@ -104,16 +104,17 @@ class SyntheticFlight:
         # GPS drifts downrange with altitude (rough, for a moving map)
         lat = self.base_lat + self.alt_agl * 1.5e-6
         lon = self.base_lon + self.alt_agl * 1.0e-6
-        # Axial axis is Y (matches the 3D model's long axis / world-up convention):
-        # gravity+thrust specific force reads on accel.y, roll rate on gyro.y.
-        gy = acc_vert / G + 1.0  # axial accel in g including gravity reaction
+        # Axial axis is Z (nose = +Z, matching the real FALCON IMU and Rocket3D).
+        # The IMU reports the gravity vector, so the axial reads -1 g at rest
+        # (accel points "down" the nose), roll rate on gyro.z.
+        gz = -(acc_vert + G)  # axial accel in m/s^2, ~-9.81 (= -1 g) at rest
         return {
             "type": "srad",
             "counter": self.counter,
             "timestamp_ms": int(self.t * 1000),
             "flight_state": self.phase,
-            "accel": {"x": n(0.05), "y": round(gy + n(0.05), 3), "z": n(0.05)},
-            "gyro": {"x": n(2.0), "y": round(120.0 + n(3.0), 2), "z": n(2.0)},
+            "accel": {"x": n(0.05), "y": n(0.05), "z": round(gz + n(0.05), 3)},
+            "gyro": {"x": n(2.0), "y": n(2.0), "z": round(120.0 + n(3.0), 2)},
             "kf_altitude": round(alt_msl + n(0.8), 2),
             "kf_velocity": round(self.vel + n(0.3), 2),
             "kf_altitude_var": 0.5,
