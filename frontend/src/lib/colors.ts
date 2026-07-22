@@ -26,6 +26,15 @@ export function statusColor(s: SourceStatus | undefined): string {
   return STATUS_COLORS[s ?? "no_data"];
 }
 
+// Landing-prediction overlay colors (magenta family — distinct from the cyan
+// SRAD track and amber COTS track on the GPS map).
+export const PREDICTION = {
+  estimate: "#ff4fa3", // best-estimate touchdown marker
+  ellipse50: "#ff4fa3",
+  ellipse90: "#ff9dcb",
+  cloud: "#ff77b8",
+};
+
 // Chart series colors.
 export const SERIES = {
   baroAvg: "#5ad1ff",

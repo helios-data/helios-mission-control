@@ -10,7 +10,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { AudioToggle } from "../components/AudioToggle";
 import { useAudioCallouts, useAudioEnabled } from "../lib/audio";
 import { api } from "../lib/api";
-import { clock, feet, fmt, fmtInt, haversine, M_TO_FT } from "../lib/units";
+import { clock, feet, fmt, fmtInt, fmtLatLon, haversine, M_TO_FT } from "../lib/units";
 import { SradPanel, CotsPanel } from "./PacketPanel";
 import { CommandConsole } from "./CommandConsole";
 
@@ -74,6 +74,7 @@ export function App() {
 }
 
 function MissionTab({ theme, sradDs, cotsDs }: { theme: "dark" | "light"; sradDs: DataState; cotsDs: DataState }) {
+  const [autoFit, setAutoFit] = useState(true);
   const cfg = store.config;
   const gs = cfg.ground_station;
   const gps = store.srad?.gps;
@@ -93,6 +94,7 @@ function MissionTab({ theme, sradDs, cotsDs }: { theme: "dark" | "light"; sradDs
         <SradPanel latest={store.srad} ds={sradDs} />
         <CotsPanel latest={store.cots} ds={cotsDs} />
         <RocketStatsPanel downrange={dist} />
+        <LandingPredictionPanel />
       </div>
 
       <div className="mc-mid">
@@ -108,9 +110,26 @@ function MissionTab({ theme, sradDs, cotsDs }: { theme: "dark" | "light"; sradDs
           </div>
         </Panel>
         <Panel title="GPS Tracks" className="mc-panel"
-          right={<span className="mono faint" style={{ fontSize: 11 }}>dist {dist} · brg {bearing}</span>}>
+          right={
+            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                className="mono"
+                onClick={() => setAutoFit((v) => !v)}
+                title="Auto-fit the map to the rocket + landing zone (re-fits as it grows or shrinks)"
+                style={{
+                  fontSize: 10, letterSpacing: "0.06em", padding: "1px 6px", borderRadius: 3, cursor: "pointer",
+                  border: `1px solid ${autoFit ? "var(--accent-cyan)" : "rgba(140,148,166,0.5)"}`,
+                  background: autoFit ? "rgba(90,209,255,0.14)" : "transparent",
+                  color: autoFit ? "var(--accent-cyan)" : "var(--text-dim)",
+                }}
+              >
+                AUTO-FIT {autoFit ? "●" : "○"}
+              </button>
+              <span className="mono faint" style={{ fontSize: 11 }}>dist {dist} · brg {bearing}</span>
+            </span>
+          }>
           <div className="mc-fill">
-            <GpsMap store={store} theme={theme} fill />
+            <GpsMap store={store} theme={theme} fill showPrediction autoFit={autoFit} />
           </div>
         </Panel>
       </div>
@@ -194,6 +213,62 @@ function RocketStatsPanel({ downrange }: { downrange: string }) {
           color={vv == null ? undefined : vv >= 0.5 ? "var(--ok)" : vv <= -0.5 ? "var(--accent-cyan)" : undefined} />
         <StatCell label="Downrange" value={downrange} sub="from pad" />
       </div>
+    </Panel>
+  );
+}
+
+// Human labels/colors for the LandingPrediction status enum.
+const PRED_STATUS: Record<string, { label: string; color: string }> = {
+  final: { label: "FINAL", color: "var(--ok)" },
+  predicting: { label: "PREDICTING", color: "var(--accent-cyan)" },
+  not_descending: { label: "PRE-DESCENT", color: "var(--text-dim)" },
+};
+
+// Expected landing zone from Helios.Services.LandingPredictor: predicted touchdown
+// coordinates + distance from pad, downrange-to-landing, and the 90% zone size.
+function LandingPredictionPanel() {
+  const lp = store.landing;
+  const gs = store.config.ground_station;
+  const best = lp?.best_estimate ?? null;
+
+  let fromPad = "—", brg = "—", downrange = "—", zone = "—";
+  if (best && gs) {
+    const r = haversine(gs.lat, gs.lon, best.lat, best.lon);
+    fromPad = `${fmt(r.distance, 0)} m`;
+    brg = `${fmt(r.bearing, 0)}°`;
+  }
+  const cur = store.srad?.gps;
+  if (best && hasGpsFix(cur?.lon, cur?.lat)) {
+    downrange = `${fmt(haversine(cur!.lat!, cur!.lon!, best.lat, best.lon).distance, 0)} m`;
+  }
+  // 90% zone radius ≈ farthest ellipse vertex from the best estimate.
+  if (best && lp && lp.ellipse_90.length) {
+    const maxR = Math.max(...lp.ellipse_90.map((p) => haversine(best.lat, best.lon, p.lat, p.lon).distance));
+    zone = `±${fmt(maxR, 0)} m`;
+  }
+  const st = lp?.status
+    ? PRED_STATUS[lp.status] ?? { label: lp.status.toUpperCase(), color: "var(--text-dim)" }
+    : null;
+
+  return (
+    <Panel title="Landing Prediction"
+      right={st ? <span className="mono" style={{ fontSize: 11, color: st.color }}>{st.label}</span> : undefined}>
+      {!lp || !best ? (
+        <div className="empty-note" style={{ padding: "12px 4px", color: "var(--text-dim)", fontSize: 12 }}>
+          Awaiting prediction
+        </div>
+      ) : (
+        <div className="rs-grid">
+          <StatCell label="Pred lat" value={fmtLatLon(best.lat)} />
+          <StatCell label="Pred lon" value={fmtLatLon(best.lon)} />
+          <StatCell label="From pad" value={fromPad} sub={`brg ${brg}`} />
+          <StatCell label="Remaining" value={downrange} sub="to landing" />
+          <StatCell label="90% zone" value={zone} color={lp.final ? "var(--ok)" : undefined} />
+          <StatCell label="Descent alt" value={lp.current_alt_agl != null ? `${fmt(lp.current_alt_agl, 0)} m` : "—"} />
+          <StatCell label="Model" value={lp.descent_model ?? "—"} sub={`wind ${lp.wind_source ?? "—"}`} />
+          <StatCell label="Source" value={(lp.current_source ?? "—").toUpperCase()} sub={`pkt ${lp.based_on_packet_counter}`} />
+        </div>
+      )}
     </Panel>
   );
 }

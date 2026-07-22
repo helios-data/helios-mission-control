@@ -75,6 +75,55 @@ def normalize_srad(pkt: object) -> dict[str, Any]:
     }
 
 
+def _landing_point(p: object) -> dict[str, float] | None:
+    """A LandingPoint (lat/lon) -> {"lat","lon"} dict, or None if incomplete/zero."""
+    if p is None:
+        return None
+    lat = _num(p, "lat", "latitude")
+    lon = _num(p, "lon", "longitude")
+    # 0/0 is the predictor's unset default, not a real coordinate (§ GPS-fix rule).
+    if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
+        return None
+    return {"lat": lat, "lon": lon}
+
+
+def _landing_points(seq: object) -> list[dict[str, float]]:
+    out: list[dict[str, float]] = []
+    for p in seq or []:
+        pt = _landing_point(p)
+        if pt is not None:
+            out.append(pt)
+    return out
+
+
+def normalize_landing(pkt: object) -> dict[str, Any]:
+    """betterproto LandingPrediction -> normalized prediction frame.
+
+    Published by Helios.Services.LandingPredictor on the ``landing_prediction``
+    event. Points are normalized to {"lat","lon"} dicts (0/0 dropped) so the map
+    overlay never plots the predictor's unset default. Mirrors PredictionFrame in
+    frontend/src/lib/telemetry.ts.
+    """
+    return {
+        "type": "prediction",
+        "based_on_packet_counter": _get(pkt, "based_on_packet_counter") or 0,
+        "computed_at_ms": _get(pkt, "computed_at_ms") or 0,
+        "final": bool(_get(pkt, "final")),
+        "best_estimate": _landing_point(_get(pkt, "best_estimate")),
+        "dispersion_cloud": _landing_points(_get(pkt, "dispersion_cloud")),
+        "ellipse_50": _landing_points(_get(pkt, "ellipse_50")),
+        "ellipse_90": _landing_points(_get(pkt, "ellipse_90")),
+        "current_lat": _num(pkt, "current_lat"),
+        "current_lon": _num(pkt, "current_lon"),
+        "current_source": _get(pkt, "current_source"),
+        "wind_source": _get(pkt, "wind_source"),
+        "descent_model": _get(pkt, "descent_model"),
+        "current_alt_agl": _num(pkt, "current_alt_agl"),
+        "flight_state": _num(pkt, "flight_state"),
+        "status": _get(pkt, "status"),
+    }
+
+
 def normalize_cots(pkt: object) -> dict[str, Any]:
     """betterproto AprsPacket -> normalized COTS frame."""
     pos = _get(pkt, "position")

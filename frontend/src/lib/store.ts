@@ -7,7 +7,7 @@
 import { useSyncExternalStore } from "react";
 import type {
   AckFrame, CotsFrame, EventType, Frame, LinkFrame, MissionConfig, MissionEvent,
-  MissionFrame, SradFrame,
+  MissionFrame, PredictionFrame, SradFrame,
 } from "./telemetry";
 import { EVENT_META } from "./eventmeta";
 
@@ -36,6 +36,7 @@ export class MissionStore {
   cots: CotsFrame | null = null;
   link: LinkFrame | null = null;
   mission: MissionFrame | null = null;
+  landing: PredictionFrame | null = null;
   config: MissionConfig = {};
   acks: AckFrame[] = [];
   events: MissionEvent[] = [];
@@ -129,11 +130,13 @@ export class MissionStore {
         this.setMission(f.mission ?? null);
         if (f.srad) this.ingestSrad(f.srad);
         if (f.cots) this.ingestCots(f.cots);
+        if (f.prediction) this.landing = f.prediction;
         break;
       case "srad": this.ingestSrad(f); break;
       case "cots": this.ingestCots(f); break;
       case "link": this.link = f; break;
       case "mission": this.setMission(f); break;
+      case "prediction": this.landing = f; break;
       case "config": { const { type, ...rest } = f; this.config = rest; break; }
       case "ack": this.ingestAck(f); break;
     }

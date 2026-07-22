@@ -122,10 +122,14 @@ class MissionState:
         ui = config.get("ui", {})
         self.srad_link = LinkTracker(stale_after_s=ui.get("srad_stale_seconds", 5))
         self.cots_link = LinkTracker(stale_after_s=ui.get("cots_stale_seconds", 60))
+        # Landing-prediction node (Helios.Services.LandingPredictor) is low-rate and
+        # optional; a generous stale window so a paused predictor reads STALE, not gone.
+        self.landing_link = LinkTracker(stale_after_s=ui.get("landing_stale_seconds", 30))
         self.core_connected = False
 
         self.srad_latest: dict[str, Any] | None = None
         self.cots_latest: dict[str, Any] | None = None
+        self.landing_latest: dict[str, Any] | None = None
         self.srad_history: deque[dict[str, Any]] = deque(maxlen=srad_ring)
         self.cots_history: deque[dict[str, Any]] = deque(maxlen=cots_ring)
 
@@ -213,6 +217,13 @@ class MissionState:
         self._emit("cots", cots)
         return cots
 
+    def ingest_landing(self, pred: dict[str, Any]) -> dict[str, Any]:
+        """Store the latest landing prediction and mark the predictor link fresh."""
+        self.landing_latest = pred
+        self.landing_link.mark()
+        self._emit("landing", pred)
+        return pred
+
     def record_srad_error(self) -> None:
         self.srad_link.mark_error()
 
@@ -295,6 +306,7 @@ class MissionState:
             "core_connected": self.core_connected,
             "srad": self.srad_link.snapshot(),
             "cots": self.cots_link.snapshot(),
+            "landing": self.landing_link.snapshot(),
         }
 
     def mission_snapshot(self) -> dict[str, Any]:
@@ -325,4 +337,5 @@ class MissionState:
             "mission": self.mission_snapshot(),
             "srad": self.srad_latest,
             "cots": self.cots_latest,
+            "prediction": self.landing_latest,
         }

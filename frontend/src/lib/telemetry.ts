@@ -88,6 +88,34 @@ export interface LinkFrame {
   core_connected: boolean;
   srad: LinkSourceSnap;
   cots: LinkSourceSnap;
+  landing?: LinkSourceSnap; // Helios.Services.LandingPredictor freshness (optional node)
+}
+
+// Landing prediction (Helios.Services.LandingPredictor -> `landing_prediction`).
+// Mirrors LandingPrediction in protos-proposed/landing_prediction.proto, normalized
+// by src/telemetry.py:normalize_landing. Points are {lat,lon}; 0/0 are dropped.
+export interface LandingPoint {
+  lat: number;
+  lon: number;
+}
+
+export interface PredictionFrame {
+  type: "prediction";
+  based_on_packet_counter: number;
+  computed_at_ms: number;
+  final: boolean;
+  best_estimate: LandingPoint | null;
+  dispersion_cloud: LandingPoint[];
+  ellipse_50: LandingPoint[];
+  ellipse_90: LandingPoint[];
+  current_lat: number | null;
+  current_lon: number | null;
+  current_source: string | null;
+  wind_source: string | null;
+  descent_model: string | null;
+  current_alt_agl: number | null;
+  flight_state: number | null;
+  status: string | null; // "not_descending" | "predicting" | "final"
 }
 
 export interface Transition {
@@ -164,6 +192,7 @@ export interface SnapshotFrame {
   mission: MissionFrame;
   srad: SradFrame | null;
   cots: CotsFrame | null;
+  prediction: PredictionFrame | null;
 }
 
 export type Frame =
@@ -172,5 +201,6 @@ export type Frame =
   | LinkFrame
   | MissionFrame
   | AckFrame
+  | PredictionFrame
   | SnapshotFrame
   | ({ type: "config" } & MissionConfig);

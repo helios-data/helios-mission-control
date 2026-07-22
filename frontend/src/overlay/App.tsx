@@ -9,7 +9,7 @@ import { getStore, useStore, hasGpsFix } from "../lib/store";
 import { sourceState, type DataState } from "../lib/fallback";
 import { useTheme } from "../lib/theme";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { stateColor } from "../lib/colors";
+import { PREDICTION, stateColor } from "../lib/colors";
 import { clock, feet, fmt, fmtLatLon, G_MS2, M_TO_FT } from "../lib/units";
 import { VideoPanel } from "./VideoPanel";
 
@@ -39,20 +39,36 @@ function useProfile(): Profile | undefined {
   return p;
 }
 
-function Panel({ h, children, className = "", stale = false }: {
-  h: string; children: ReactNode; className?: string; stale?: boolean;
+function Panel({ h, children, className = "", stale = false, right }: {
+  h: string; children: ReactNode; className?: string; stale?: boolean; right?: ReactNode;
 }) {
   return (
     <div className={`ov-panel panel-corner ${className} ${stale ? "stale" : ""}`}>
-      <div className="h">{h}</div>
+      <div className="h" style={right ? { display: "flex", justifyContent: "space-between", alignItems: "center" } : undefined}>
+        <span>{h}</span>{right}
+      </div>
       {children}
     </div>
   );
 }
 
+// Operator toggle: overlay the predicted landing zone on the GPS map. Off by
+// default so the public stream stays clean; persisted across reloads (OBS keeps
+// the page alive, but a profile reload shouldn't lose the operator's choice).
+function usePredictionToggle(): [boolean, () => void] {
+  const [on, setOn] = useState<boolean>(() => {
+    try { return localStorage.getItem("hmc-show-landing") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hmc-show-landing", on ? "1" : "0"); } catch { /* ignore */ }
+  }, [on]);
+  return [on, () => setOn((v) => !v)];
+}
+
 export function App() {
   useStore(store);
   const [theme, toggleTheme] = useTheme();
+  const [showPred, togglePred] = usePredictionToggle();
   const now = useClocks();
   const profile = useProfile();
   const cfg = store.config;
@@ -166,17 +182,26 @@ export function App() {
 
       {/* RIGHT */}
       <div className="ov-right">
-        <Panel h="GPS" stale={cotsDs.status === "stale" && sradDs.status !== "live"}>
+        <Panel h="GPS" stale={cotsDs.status === "stale" && sradDs.status !== "live"}
+          right={<PredToggle on={showPred} onToggle={togglePred} />}>
           {!hasGps ? (
             <div className="awaiting" style={{ height: 220 }}>No GPS fix</div>
           ) : (
-            <GpsMap store={store} height={220} theme={theme} />
+            <GpsMap store={store} height={220} theme={theme} showPrediction={showPred} autoFit />
           )}
           <div className="kv" style={{ marginTop: 8, display: "grid", gridTemplateColumns: "auto 1fr", gap: "2px 10px", fontFamily: "var(--mono)", fontSize: 12 }}>
             <span className="dim">lat</span><span style={{ textAlign: "right" }}>{fmtLatLon(s?.gps.lat)}</span>
             <span className="dim">lon</span><span style={{ textAlign: "right" }}>{fmtLatLon(s?.gps.lon)}</span>
             <span className="dim">fix / sats</span>
             <span style={{ textAlign: "right" }}>fix {s?.gps.fix ?? "—"} · {s?.gps.sats ?? 0} sats</span>
+            {showPred && store.landing?.best_estimate && (
+              <>
+                <span style={{ color: PREDICTION.estimate }}>pred landing</span>
+                <span style={{ textAlign: "right", color: PREDICTION.estimate }}>
+                  {fmtLatLon(store.landing.best_estimate.lat)}, {fmtLatLon(store.landing.best_estimate.lon)}
+                </span>
+              </>
+            )}
           </div>
         </Panel>
         <Panel h="Telemetry Health">
@@ -205,6 +230,25 @@ function Stat({ label, value, unit, sub, size = 24 }: {
       </span>
       {sub && <span className="faint mono" style={{ fontSize: 11 }}>{sub}</span>}
     </div>
+  );
+}
+
+// Small header toggle for the predicted landing-zone overlay on the GPS map.
+function PredToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      className="mono"
+      title="Toggle predicted landing zone on the map"
+      style={{
+        fontSize: 9, letterSpacing: "0.08em", padding: "2px 6px", borderRadius: 3, cursor: "pointer",
+        border: `1px solid ${on ? PREDICTION.estimate : "rgba(140,148,166,0.5)"}`,
+        background: on ? "rgba(255,79,163,0.16)" : "transparent",
+        color: on ? PREDICTION.estimate : "var(--text-dim)",
+      }}
+    >
+      LANDING {on ? "●" : "○"}
+    </button>
   );
 }
 

@@ -33,6 +33,7 @@ async def run_standalone(state: MissionState, hub: ConnectionHub) -> None:
     log.info("STANDALONE synthetic flight running at %.0f Hz", hz)
     tick = 0
     aprs_period_ticks = max(1, int(hz / 0.2))  # ~0.2 Hz APRS
+    pred_period_ticks = max(1, int(hz / 1.0))   # ~1 Hz landing predictions
     housekeeping_ticks = max(1, int(hz / 4))    # link/mission ~4 Hz
 
     # Deadline-based pacing: sleep only for the time left until the next tick, not
@@ -48,6 +49,11 @@ async def run_standalone(state: MissionState, hub: ConnectionHub) -> None:
 
         if tick % aprs_period_ticks == 0:
             await hub.broadcast(state.ingest_cots(flight.aprs_frame(callsign)))
+
+        if tick % pred_period_ticks == 0:
+            pred = flight.landing_prediction()
+            if pred is not None:
+                await hub.broadcast(state.ingest_landing(pred))
 
         if tick % housekeeping_ticks == 0:
             await hub.broadcast(state.link_snapshot())

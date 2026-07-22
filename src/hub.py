@@ -17,7 +17,7 @@ from starlette.websockets import WebSocket, WebSocketState
 log = logging.getLogger("mission-control.hub")
 
 # Frame types an overlay client is allowed to receive (read-only surface).
-_OVERLAY_ALLOWED = {"srad", "cots", "link", "mission", "config", "snapshot"}
+_OVERLAY_ALLOWED = {"srad", "cots", "link", "mission", "config", "snapshot", "prediction"}
 
 
 class ConnectionHub:

@@ -28,7 +28,7 @@
 /* Mission Control tab: 3-panel top row, altitude+GPS filling the middle,
    link health pinned to the bottom (no scrolling). */
 .mc-tab { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-.mc-top { display: grid; grid-template-columns: 300px 1fr 1fr 240px; gap: 10px; flex: 0 0 auto; }
+.mc-top { display: grid; grid-template-columns: 300px 1fr 1fr 240px 240px; gap: 10px; flex: 0 0 auto; }
 .mc-mid {
   flex: 1; min-height: 0; display: grid;
   grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 1fr); gap: 10px;

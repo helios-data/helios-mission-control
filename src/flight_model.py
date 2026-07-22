@@ -7,13 +7,30 @@ No protobuf / SDK dependency, so it runs anywhere.
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from typing import Any
 
-from .constants import mach_estimate
+from .constants import FLIGHT_STATES, mach_estimate
 
 G = 9.80665
+
+# Synthetic landing-prediction model (the real estimator is a separate node,
+# Helios.Services.LandingPredictor). A nominal wind carries the rocket downwind
+# during descent; the uncertainty zone shrinks as remaining altitude drops.
+_PRED_DESCENT_RATE_MS = 8.0     # nominal descent rate for the time-aloft estimate
+_PRED_WIND_SPEED_MS = 6.0
+_PRED_WIND_BEARING_DEG = 65.0   # direction the wind pushes the rocket (ENE)
+
+# LandingPrediction.status values (mirror the predictor node / proto docs).
+STATUS_NOT_DESCENDING = "not_descending"
+STATUS_PREDICTING = "predicting"
+STATUS_FINAL = "final"
+
+# The sim only estimates a landing point once the rocket is past apogee (i.e.
+# descending). Before that there is no meaningful touchdown estimate to publish.
+_POST_APOGEE_PHASES = ("DROGUE_DESCENT", "MAIN_DESCENT", "LANDED")
 
 
 @dataclass
@@ -127,6 +144,74 @@ class SyntheticFlight:
             "gps": {"lat": round(lat, 6), "lon": round(lon, 6),
                     "alt": round(alt_msl, 1), "speed": round(abs(self.vel), 1),
                     "sats": 12, "fix": 3},
+        }
+
+    def landing_prediction(self) -> dict[str, Any] | None:
+        """A synthetic LandingPrediction frame (mirrors telemetry.normalize_landing).
+
+        Returns None until the rocket is past apogee — the sim only estimates a
+        touchdown once descending (DROGUE/MAIN/LANDED). The predicted point sits
+        downwind of the pad and its 50/90% ellipses + dispersion cloud tighten as
+        the rocket descends, matching what the real LandingPredictor node publishes.
+        """
+        if self.phase not in _POST_APOGEE_PHASES:
+            return None
+
+        remaining = max(0.0, self.alt_agl)
+        time_aloft = remaining / _PRED_DESCENT_RATE_MS
+        drift_m = _PRED_WIND_SPEED_MS * time_aloft
+        br = math.radians(_PRED_WIND_BEARING_DEG)
+        m_per_deg_lat = 111320.0
+        m_per_deg_lon = 111320.0 * math.cos(math.radians(self.base_lat))
+
+        landed = self.phase == "LANDED"
+        # Ground track returns toward the pad as alt->0 in this toy model; the wind
+        # offsets the touchdown from it. Once landed, freeze on the pad.
+        best_lat = self.base_lat + (0.0 if landed else drift_m * math.cos(br) / m_per_deg_lat)
+        best_lon = self.base_lon + (0.0 if landed else drift_m * math.sin(br) / m_per_deg_lon)
+
+        r90 = 0.0 if landed else max(25.0, remaining * 0.25 + drift_m * 0.4)
+        r50 = r90 * 0.6
+
+        def ring(radius: float) -> list[dict[str, float]]:
+            if radius <= 0:
+                return [{"lat": round(best_lat, 6), "lon": round(best_lon, 6)}]
+            pts: list[dict[str, float]] = []
+            for i in range(24):
+                th = 2 * math.pi * i / 24
+                along = radius * 1.4 * math.cos(th)   # elongated down-range (wind axis)
+                cross = radius * 0.7 * math.sin(th)
+                e = along * math.sin(br) + cross * math.cos(br)
+                n = along * math.cos(br) - cross * math.sin(br)
+                pts.append({"lat": round(best_lat + n / m_per_deg_lat, 6),
+                            "lon": round(best_lon + e / m_per_deg_lon, 6)})
+            return pts
+
+        cloud: list[dict[str, float]] = []
+        if not landed:
+            for _ in range(40):
+                n = random.gauss(0, r90 * 0.5)
+                e = random.gauss(0, r90 * 0.5)
+                cloud.append({"lat": round(best_lat + n / m_per_deg_lat, 6),
+                              "lon": round(best_lon + e / m_per_deg_lon, 6)})
+
+        return {
+            "type": "prediction",
+            "based_on_packet_counter": self.counter,
+            "computed_at_ms": int(self.t * 1000),
+            "final": landed,
+            "best_estimate": {"lat": round(best_lat, 6), "lon": round(best_lon, 6)},
+            "dispersion_cloud": cloud,
+            "ellipse_50": ring(r50),
+            "ellipse_90": ring(r90),
+            "current_lat": round(self.base_lat + self.alt_agl * 1.5e-6, 6),
+            "current_lon": round(self.base_lon + self.alt_agl * 1.0e-6, 6),
+            "current_source": "srad",
+            "wind_source": "live",
+            "descent_model": "constant",
+            "current_alt_agl": round(remaining, 2),
+            "flight_state": float(FLIGHT_STATES.index(self.phase)) if self.phase in FLIGHT_STATES else -1.0,
+            "status": STATUS_FINAL if landed else STATUS_PREDICTING,
         }
 
     def aprs_frame(self, callsign: str = "N0CALL") -> dict[str, Any]:
