@@ -1,3 +1,0 @@
-# nanopb size options for the RF-uplinked packet (mirrors HelloWorldPacket.options).
-# Ensures a fixed, bounded wire size for the FALCON firmware decoder.
-# UplinkPacket has only scalar fields, so no variable-length allocations are needed.

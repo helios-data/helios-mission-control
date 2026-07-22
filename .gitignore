@@ -7,7 +7,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Generated protobuf package (produced by `make protos`)
+# Generated protobuf package
 src/generated/
 
 # Frontend
@@ -28,8 +28,8 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Claude working memory (progress/status across conversations)
-memory/
+# Any claude files
+.claude/
 
 # Local browser-test helpers
 frontend/browsercheck.mjs
