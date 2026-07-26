@@ -45,6 +45,9 @@ def _build_telemetry(cls, frame: dict):
         setattr(pkt, f"baro{i}_healthy", b["healthy"])
         setattr(pkt, f"baro{i}_altitude", b["altitude"] or 0.0)
     pkt.ground_altitude = frame["ground_altitude"]
+    cam = frame.get("camera") or {}
+    pkt.runcam_power = bool(cam.get("power"))
+    pkt.runcam_recording = bool(cam.get("recording"))
     g = frame["gps"]
     pkt.gps_latitude = g["lat"] or 0.0
     pkt.gps_longitude = g["lon"] or 0.0

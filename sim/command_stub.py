@@ -1,8 +1,10 @@
-"""Command stub (§9): subscribes to `command` and returns acks.
+"""Command stub (§9): subscribes to `command` and decodes it.
 
 Stands in for helios-cots-telemetry so the admin command console can be tested
 end-to-end against a live core without the RFD900x hardware. It parses the
-GroundCommand, logs it, and publishes a CommandAck.
+GroundCommand (falcon-protos) and logs it. There is no CommandAck any more —
+camera state is confirmed to the operator via the TelemetryPacket
+(runcam_power / runcam_recording), which sim/replay.py drives.
 
 Requires the SDK + protos (make deps && make protos).
 
@@ -25,11 +27,10 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--core", default="Helios")
     ap.add_argument("--port", type=int, default=5000)
-    ap.add_argument("--fail", action="store_true", help="ack every command as failure (test path)")
     args = ap.parse_args()
 
     from helios import HeliosClient
-    from src.generated.helios.ground import CommandAck, GroundCommand  # requires `make protos`
+    from src.generated import GroundCommand  # falcon-protos; requires `make protos`
 
     client = HeliosClient(core_address=args.core, core_port=args.port,
                           node_uri="Helios.Sim.CommandStub")
@@ -43,16 +44,7 @@ async def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 print("failed to parse command:", exc)
                 continue
-            which = cmd.to_dict()
-            print(f"[stub] cmd #{cmd.command_id} operator={cmd.operator!r} {which}")
-            ack = CommandAck(
-                command_id=cmd.command_id,
-                success=not args.fail,
-                message="[stub] applied" if not args.fail else "[stub] simulated failure",
-            )
-            await client.publish_event(
-                event_name="command_ack", data=bytes(ack), override_address=COMMAND_ADDRESS,
-            )
+            print(f"[stub] cmd #{cmd.command_id} operator={cmd.operator!r} {cmd.to_dict()}")
 
 
 if __name__ == "__main__":
