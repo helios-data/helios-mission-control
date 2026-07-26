@@ -32,6 +32,10 @@ export interface SradFrame {
   baro0: Baro;
   baro1: Baro;
   ground_altitude: number;
+  // Onboard camera status reported by the FC firmware (VTX/RunCam power switch +
+  // recording). This is the confirmation for camera commands — telemetry-baked,
+  // not a separate CommandAck.
+  camera: { power: boolean; recording: boolean };
   gps: {
     lat: number | null;
     lon: number | null;
@@ -153,6 +157,9 @@ export interface MissionFrame {
   transitions: Transition[];
 }
 
+// Command log entry. Named "ack" for historical reasons, but there is no
+// CommandAck proto any more: status only reflects whether we published the
+// command (sent) or not (error). Camera confirmation comes via srad.camera.
 export interface AckFrame {
   type: "ack";
   command_id: number;
@@ -160,7 +167,7 @@ export interface AckFrame {
   payload: Record<string, unknown>;
   operator: string;
   issued_at: number;
-  status: "pending" | "ok" | "error" | "timeout";
+  status: "pending" | "sent" | "error";
   message: string;
 }
 

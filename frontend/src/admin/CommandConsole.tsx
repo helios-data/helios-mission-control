@@ -4,76 +4,92 @@ import { api } from "../lib/api";
 import type { MissionStore } from "../lib/store";
 import { IN_FLIGHT } from "../lib/flightmeta";
 
-function CameraToggle({
-  label, field, store, operator, disabled,
-}: {
-  label: string;
-  field: "vtx_power" | "runcam_power" | "recording";
-  store: MissionStore;
-  operator: string;
-  disabled?: boolean;
+// Confirmed on/off pill driven by telemetry (srad.camera). `null` = no telemetry
+// yet, so we can't confirm the onboard state.
+function Confirmed({ value, onLabel = "ON", offLabel = "OFF", rec = false }: {
+  value: boolean | null;
+  onLabel?: string;
+  offLabel?: string;
+  rec?: boolean;
 }) {
-  const on = store.cameraState[field];
+  if (value === null) return <span className="cam-unknown mono">—</span>;
+  if (!value) return <span className="cam-off mono">{offLabel}</span>;
+  return <span className={`mono ${rec ? "cam-rec" : "cam-on"}`}>{onLabel}</span>;
+}
+
+// Single switch that powers the whole onboard camera chain (VTX + RunCam) plus
+// the RunCam recording toggle. "commanded" = last thing we uplinked; "confirmed"
+// = what the FC firmware reports back in telemetry (srad.camera).
+function CameraControls({ store, operator }: { store: MissionStore; operator: string }) {
+  const commanded = store.cameraState;               // { power, recording }
+  const confirmed = store.srad?.camera ?? null;      // { power, recording } | null
   const pending = store.acks.some((a) => a.command_type === "camera" && a.status === "pending");
+  // Recording is allowed only when the camera has power (confirmed if we have
+  // telemetry, otherwise the commanded state).
+  const powerOn = confirmed ? confirmed.power : commanded.power;
+
+  const send = (payload: Record<string, boolean>) =>
+    api.command("camera", payload, operator).catch((e) => alert((e as Error).message));
+
   return (
-    <div className="toggle-row">
-      <span>
-        <span className="upper" style={{ fontSize: 12 }}>{label}</span>
-        <br />
-        <span className="faint mono" style={{ fontSize: 10 }}>
-          commanded: {on ? "ON" : "OFF"} {pending ? "· ?" : ""}
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div className="toggle-row">
+        <span>
+          <span className="upper" style={{ fontSize: 12 }}>Camera power (VTX + RunCam)</span>
+          <br />
+          <span className="cam-status">
+            <span className="faint mono">commanded {commanded.power ? "ON" : "OFF"}{pending ? " ·" : ""}</span>
+            <span className="faint">·</span>
+            <span className="faint">confirmed</span>
+            <Confirmed value={confirmed ? confirmed.power : null} />
+          </span>
         </span>
-      </span>
-      <button
-        className={on ? "on" : ""}
-        disabled={disabled}
-        onClick={() => api.command("camera", { [field]: !on }, operator).catch((e) => alert(e.message))}
-      >
-        {on ? "ON" : "OFF"}
-      </button>
+        <button
+          className={commanded.power ? "on" : ""}
+          onClick={() => send({ power: !commanded.power, ...(commanded.power ? { recording: false } : {}) })}
+        >
+          {commanded.power ? "ON" : "OFF"}
+        </button>
+      </div>
+
+      <div className="toggle-row">
+        <span>
+          <span className="upper" style={{ fontSize: 12 }}>RunCam recording</span>
+          <br />
+          <span className="cam-status">
+            <span className="faint mono">commanded {commanded.recording ? "REC" : "OFF"}</span>
+            <span className="faint">·</span>
+            <span className="faint">confirmed</span>
+            <Confirmed value={confirmed ? confirmed.recording : null} onLabel="REC" rec />
+          </span>
+        </span>
+        <button
+          className={commanded.recording ? "on" : ""}
+          disabled={!powerOn}
+          onClick={() => send({ recording: !commanded.recording })}
+        >
+          {commanded.recording ? "REC" : "OFF"}
+        </button>
+      </div>
+
+      {!powerOn && (
+        <div className="faint" style={{ fontSize: 10 }}>
+          recording disabled while camera power is off
+        </div>
+      )}
     </div>
   );
 }
 
-// Single switch that powers the whole onboard camera chain (VTX + RunCam Split)
-// together. Powering off also clears recording so its interlock stays consistent.
-function CameraPowerToggle({ store, operator }: { store: MissionStore; operator: string }) {
-  const vtx = store.cameraState.vtx_power;
-  const runcam = store.cameraState.runcam_power;
-  const on = vtx && runcam;
-  const pending = store.acks.some((a) => a.command_type === "camera" && a.status === "pending");
-  const toggle = () =>
-    api
-      .command(
-        "camera",
-        on
-          ? { vtx_power: false, runcam_power: false, recording: false }
-          : { vtx_power: true, runcam_power: true },
-        operator,
-      )
-      .catch((e) => alert(e.message));
-  return (
-    <div className="toggle-row">
-      <span>
-        <span className="upper" style={{ fontSize: 12 }}>Camera power (VTX + RunCam)</span>
-        <br />
-        <span className="faint mono" style={{ fontSize: 10 }}>
-          commanded: VTX {vtx ? "ON" : "OFF"} · RunCam {runcam ? "ON" : "OFF"} {pending ? "· ?" : ""}
-        </span>
-      </span>
-      <button className={on ? "on" : ""} onClick={toggle}>
-        {on ? "ON" : "OFF"}
-      </button>
-    </div>
-  );
-}
-
+// RFD900x S-registers exposed for ground-modem reconfiguration (falcon-protos
+// RfdConfig). All map to SiK/RFD900x AT S-registers.
 const RFD_FIELDS: [string, string][] = [
   ["min_freq_khz", "Min freq (kHz)"],
   ["max_freq_khz", "Max freq (kHz)"],
   ["net_id", "Net ID"],
   ["tx_power_dbm", "TX power (dBm)"],
   ["air_speed_kbps", "Air speed (kbps)"],
+  ["num_channels", "Num channels"],
 ];
 
 export function CommandConsole({ store }: { store: MissionStore }) {
@@ -83,11 +99,10 @@ export function CommandConsole({ store }: { store: MissionStore }) {
   const [override, setOverride] = useState(false);
   const inFlight = IN_FLIGHT.has(store.mission?.flight_state ?? "STANDBY");
   const rfdLocked = inFlight && !override;
-  const runcamOn = store.cameraState.runcam_power;
 
   const submitRfd = async () => {
     try {
-      await api.command("rfd_config", { ...rfd, write_eeprom: true, operator }, operator, override);
+      await api.command("rfd_config", { ...rfd }, operator, override);
       setArmed(false);
     } catch (e) {
       alert((e as Error).message);
@@ -102,16 +117,7 @@ export function CommandConsole({ store }: { store: MissionStore }) {
           <div className="dim upper" style={{ fontSize: 11, marginBottom: 6 }}>
             Onboard camera (RF uplink)
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <CameraPowerToggle store={store} operator={operator} />
-            <CameraToggle
-              label="RunCam recording" field="recording" store={store} operator={operator}
-              disabled={!runcamOn}
-            />
-          </div>
-          {!runcamOn && <div className="faint" style={{ fontSize: 10, marginTop: 4 }}>
-            recording disabled while RunCam power is off
-          </div>}
+          <CameraControls store={store} operator={operator} />
         </div>
 
         {/* RFD900x ground-modem config */}
@@ -158,7 +164,7 @@ export function CommandConsole({ store }: { store: MissionStore }) {
         <input value={operator} onChange={(e) => setOperator(e.target.value)} style={{ width: 140 }} />
       </label>
 
-      {/* Command history */}
+      {/* Command log */}
       <div className="field-table-wrap" style={{ marginTop: 8 }}>
         <table>
           <thead>

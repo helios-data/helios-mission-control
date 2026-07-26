@@ -73,7 +73,13 @@
 .rfd-form label { display: flex; flex-direction: column; gap: 2px; font-size: 10px;
   text-transform: uppercase; color: var(--text-dim); }
 .badge-pending { color: var(--warn); }
-.badge-ok { color: var(--ok); }
-.badge-error, .badge-timeout { color: var(--err); }
+.badge-sent { color: var(--ok); }
+.badge-error { color: var(--err); }
+/* Confirmed-from-telemetry camera status pills */
+.cam-status { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; }
+.cam-on { color: var(--ok); }
+.cam-off { color: var(--text-dim); }
+.cam-rec { color: var(--err); }
+.cam-unknown { color: var(--text-dim); opacity: 0.6; }
 .warnbox { border: 1px solid var(--warn); background: #ffb02010; color: var(--warn);
   padding: 6px 8px; border-radius: 3px; font-size: 11px; margin-top: 6px; }

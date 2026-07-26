@@ -24,7 +24,7 @@ COTS_EVENT = "aprs"
 # Landing predictor (separate Helios node; optional — may not be running).
 LANDING_ADDRESS = "Helios.Services.LandingPredictor"
 LANDING_EVENT = "landing_prediction"
-NODE_URI = "Helios.Services.MissionControl"
+NODE_URI = "Helios.Services.Mission_Control"
 
 # Retry cadence for the (optional) landing-prediction subscription, kept isolated
 # so a missing/idle predictor never tears down the SRAD/COTS subscriptions.
@@ -62,7 +62,6 @@ class HeliosBridge:
         self.client: Any = None
         self._telemetry_cls: Any = None
         self._aprs_cls: Any = None
-        self.commands: Any = None  # set by main._attach_bridge_publisher
 
     async def run(self) -> None:
         from helios import HeliosClient  # noqa: PLC0415
@@ -86,7 +85,6 @@ class HeliosBridge:
                     self._subscribe_srad(),
                     self._subscribe_cots(),
                     self._subscribe_landing(),
-                    self._subscribe_acks(),
                     self._housekeeping(),
                 )
             except asyncio.CancelledError:
@@ -197,17 +195,20 @@ class HeliosBridge:
 
     # ---- command path (§5) ----------------------------------------------
     async def publish_command(
-        self, command_id: int, cmd_type: str, payload: dict[str, Any], commands: Any
+        self, command_id: int, cmd_type: str, payload: dict[str, Any]
     ) -> None:
-        """Serialize a GroundCommand (proposed protos) and publish it on the core.
+        """Serialize a GroundCommand (falcon-protos) and publish it on the core.
 
         RFD config + camera control both publish on the FALCON telemetry address
         with event_name='command'; helios-cots-telemetry (owner of the RFD serial
-        port) consumes it and replies with 'command_ack' (§5). Requires
-        `make protos` to have compiled protos-proposed/ground_command.proto.
+        port) consumes it — RFD config is applied to the ground modem, camera
+        control is uplinked to FALCON over RF. There is no separate command_ack:
+        the onboard camera state is confirmed via TelemetryPacket
+        (runcam_power / runcam_recording, surfaced as srad.camera). Requires
+        `make protos` to have compiled falcon-protos/GroundCommand.proto.
         """
         try:
-            from src.generated.helios.ground import (  # noqa: PLC0415
+            from src.generated import (  # noqa: PLC0415
                 CameraControl,
                 GroundCommand,
                 RfdConfig,
@@ -215,7 +216,7 @@ class HeliosBridge:
         except ImportError as exc:
             raise RuntimeError(
                 "GroundCommand proto not compiled; run `make protos` after adding "
-                "the falcon-protos submodule (see protos-proposed/ground_command.proto)"
+                "the falcon-protos submodule (GroundCommand.proto now lives there)"
             ) from exc
 
         cmd = GroundCommand(command_id=command_id, issued_at_ms=int(payload.get("issued_at_ms", 0)),
@@ -223,29 +224,18 @@ class HeliosBridge:
         if cmd_type == "rfd_config":
             cmd.rfd_config = RfdConfig(**_proto_fields(RfdConfig, payload))
         elif cmd_type == "camera":
-            cmd.camera = CameraControl(**_proto_fields(CameraControl, payload))
+            # A single switch powers the VTX + RunCam together (vtx_runcam_power);
+            # recording maps to camera_recording. Both optional so one command can
+            # change one thing at a time.
+            cam = CameraControl()
+            if "power" in payload:
+                cam.vtx_runcam_power = bool(payload["power"])
+            if "recording" in payload:
+                cam.camera_recording = bool(payload["recording"])
+            cmd.camera = cam
         await self.client.publish_event(
             event_name="command", data=bytes(cmd), override_address=SRAD_ADDRESS,
         )
-
-    async def _subscribe_acks(self) -> None:
-        try:
-            from src.generated.helios.ground import CommandAck  # noqa: PLC0415
-        except ImportError:
-            log.warning("CommandAck proto not compiled; acks disabled until `make protos`")
-            return
-        async with self.client.subscribe_event(
-            address=SRAD_ADDRESS, event_name="command_ack"
-        ) as events:
-            async for event in events:
-                try:
-                    ack = CommandAck.parse(event.data)
-                except Exception:  # noqa: BLE001
-                    continue
-                if self.commands is not None:
-                    await self.commands.deliver_ack(
-                        ack.command_id, bool(ack.success), ack.message or ""
-                    )
 
     async def _housekeeping(self) -> None:
         """Emit link + mission frames at ~4 Hz so ages/rates stay fresh."""

@@ -41,7 +41,9 @@ export class MissionStore {
   acks: AckFrame[] = [];
   events: MissionEvent[] = [];
   annotations: Annotation[] = [];
-  cameraState = { vtx_power: false, runcam_power: false, recording: false };
+  // Last *commanded* camera state (a single switch powers VTX + RunCam together).
+  // The confirmed state reported by the FC is on srad.camera.
+  cameraState = { power: false, recording: false };
   connected = false;
 
   // ring buffers for heavy views
@@ -199,7 +201,7 @@ export class MissionStore {
     if (idx >= 0) this.acks[idx] = f;
     else this.acks = [...this.acks, f];
     if (f.command_type === "camera") {
-      for (const k of ["vtx_power", "runcam_power", "recording"] as const) {
+      for (const k of ["power", "recording"] as const) {
         if (k in f.payload) this.cameraState[k] = Boolean(f.payload[k]);
       }
     }

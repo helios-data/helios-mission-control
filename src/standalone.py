@@ -9,15 +9,49 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
+from .commands import CommandManager
 from .flight_model import SyntheticFlight
 from .hub import ConnectionHub
 from .state import MissionState
 
 log = logging.getLogger("mission-control.standalone")
 
+# Simulated ground->uplink->FC->telemetry round-trip before a camera command
+# shows up as confirmed in the telemetry stream.
+CAMERA_APPLY_DELAY_S = 0.4
 
-async def run_standalone(state: MissionState, hub: ConnectionHub) -> None:
+
+def _attach_camera_publisher(commands: CommandManager, flight: SyntheticFlight) -> None:
+    """Reflect camera commands back into the synthetic flight after a short delay.
+
+    Replaces the old CommandAck simulator: the confirmation now arrives via the
+    telemetry stream (srad.camera), just like on real hardware. RFD config is
+    ground-local, so there is nothing to reflect for it in STANDALONE.
+    """
+
+    async def _publish(command_id: int, cmd_type: str, payload: dict[str, Any]) -> None:
+        if cmd_type != "camera":
+            return
+
+        async def _apply() -> None:
+            await asyncio.sleep(CAMERA_APPLY_DELAY_S)
+            if "power" in payload:
+                flight.camera["power"] = bool(payload["power"])
+                if not flight.camera["power"]:
+                    flight.camera["recording"] = False  # no recording without power
+            if "recording" in payload:
+                flight.camera["recording"] = bool(payload["recording"]) and flight.camera["power"]
+
+        asyncio.create_task(_apply())
+
+    commands.publish_fn = _publish
+
+
+async def run_standalone(
+    state: MissionState, hub: ConnectionHub, commands: CommandManager | None = None
+) -> None:
     ui = state.config.get("ui", {})
     hz = float(ui.get("refresh_hz", 20)) or 20.0
     dt = 1.0 / hz
@@ -27,6 +61,8 @@ async def run_standalone(state: MissionState, hub: ConnectionHub) -> None:
         base_lat=gs.get("lat", 32.9903),
         base_lon=gs.get("lon", -106.9749),
     )
+    if commands is not None:
+        _attach_camera_publisher(commands, flight)
     callsign = state.config.get("callsign", "N0CALL")
     state.core_connected = True
 

@@ -1,15 +1,20 @@
-"""Command path: construction, publish, ack tracking, safety interlocks (§5).
+"""Command path: construction, publish, safety interlocks (§5).
 
 Transport-agnostic: the CommandManager builds command records and hands the
 payload to a `publish_fn`. In real mode the bridge wires that to serialize a
-`GroundCommand` proto and publish it on the core, and feeds `deliver_ack` from
-the `command_ack` subscription. In STANDALONE mode a simulator acks locally so
-the admin console is fully testable without hardware.
+`GroundCommand` proto (falcon-protos) and publish it on the core. In STANDALONE
+mode the publisher reflects camera commands back into the synthetic flight so the
+telemetry stream confirms them.
+
+There is no separate CommandAck any more: the onboard camera state is confirmed
+via the TelemetryPacket (runcam_power / runcam_recording, surfaced as
+srad.camera). A command record therefore only tracks whether we managed to
+publish it (SENT) or not (ERROR) — the operator watches srad.camera for the
+actual, rocket-reported result.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -23,7 +28,6 @@ from .state import MissionState
 
 log = logging.getLogger("mission-control.commands")
 
-ACK_TIMEOUT_S = 8.0
 PublishFn = Callable[[int, str, dict[str, Any]], Awaitable[None]]
 
 
@@ -31,11 +35,10 @@ class CommandError(Exception):
     """Rejected by an interlock or validation; surfaced to the operator."""
 
 
-class AckStatus(StrEnum):
-    PENDING = "pending"
-    OK = "ok"
-    ERROR = "error"
-    TIMEOUT = "timeout"
+class CommandStatus(StrEnum):
+    PENDING = "pending"  # record created, not yet published
+    SENT = "sent"        # published on the core / uplinked
+    ERROR = "error"      # publish failed or no publisher configured
 
 
 @dataclass
@@ -45,7 +48,7 @@ class CommandRecord:
     payload: dict[str, Any]
     operator: str
     issued_at: float
-    status: AckStatus = AckStatus.PENDING
+    status: CommandStatus = CommandStatus.PENDING
     message: str = ""
 
     def frame(self) -> dict[str, Any]:
@@ -68,8 +71,9 @@ class CommandManager:
         self.publish_fn: PublishFn | None = None  # set by bridge or standalone
         self._next_id = 1
         self.records: dict[int, CommandRecord] = {}
-        # Commanded (not rocket-confirmed) camera state (§4.7).
-        self.camera_state = {"vtx_power": False, "runcam_power": False, "recording": False}
+        # Last *commanded* camera state (§4.7). This is what the operator asked
+        # for; the confirmed state comes back over telemetry (srad.camera).
+        self.camera_state = {"power": False, "recording": False}
 
     # ---- issue -----------------------------------------------------------
     async def issue(
@@ -85,21 +89,23 @@ class CommandManager:
         )
         self.records[cid] = rec
 
-        if cmd_type == "camera":  # track commanded (unconfirmed) state immediately
-            for k in ("vtx_power", "runcam_power", "recording"):
+        if cmd_type == "camera":  # track commanded state immediately
+            for k in ("power", "recording"):
                 if k in payload:
                     self.camera_state[k] = bool(payload[k])
 
         await self.hub.broadcast(rec.frame())
-        if self.publish_fn is not None:
-            await self.publish_fn(cid, cmd_type, payload)
-        else:
-            rec.status = AckStatus.ERROR
+        if self.publish_fn is None:
+            rec.status = CommandStatus.ERROR
             rec.message = "no publisher configured"
-            await self.hub.broadcast(rec.frame())
-            return rec
-
-        asyncio.create_task(self._ack_timeout(cid))
+        else:
+            try:
+                await self.publish_fn(cid, cmd_type, payload)
+                rec.status = CommandStatus.SENT
+            except Exception as exc:  # noqa: BLE001 - surface any transport error to the operator
+                rec.status = CommandStatus.ERROR
+                rec.message = str(exc)
+        await self.hub.broadcast(rec.frame())
         return rec
 
     def _check_interlocks(self, cmd_type: str, payload: dict[str, Any], override: bool) -> None:
@@ -111,44 +117,16 @@ class CommandManager:
                     "set override to proceed"
                 )
         elif cmd_type == "camera":
-            # Recording requires RunCam power on (§4.7).
+            # Recording requires camera power on (§4.7): either it is already on and
+            # this command isn't turning it off, or this command turns it on.
             wants_recording = payload.get("recording") is True
-            powering_off = payload.get("runcam_power") is False
-            currently_on = self.camera_state["runcam_power"]
-            if wants_recording and (powering_off or not currently_on) and not payload.get("runcam_power"):
-                raise CommandError("cannot start recording while RunCam power is off")
+            powering_off = payload.get("power") is False
+            powering_on = payload.get("power") is True
+            currently_on = self.camera_state["power"]
+            if wants_recording and not (powering_on or (currently_on and not powering_off)):
+                raise CommandError("cannot start recording while camera power is off")
         else:
             raise CommandError(f"unknown command type: {cmd_type}")
 
-    # ---- ack -------------------------------------------------------------
-    async def deliver_ack(self, command_id: int, success: bool, message: str = "") -> None:
-        rec = self.records.get(command_id)
-        if rec is None or rec.status is not AckStatus.PENDING:
-            return
-        rec.status = AckStatus.OK if success else AckStatus.ERROR
-        rec.message = message
-        await self.hub.broadcast(rec.frame())
-
-    async def _ack_timeout(self, command_id: int) -> None:
-        await asyncio.sleep(ACK_TIMEOUT_S)
-        rec = self.records.get(command_id)
-        if rec is not None and rec.status is AckStatus.PENDING:
-            rec.status = AckStatus.TIMEOUT
-            rec.message = "no ack within timeout"
-            await self.hub.broadcast(rec.frame())
-
     def history(self) -> list[dict[str, Any]]:
         return [r.frame() for r in sorted(self.records.values(), key=lambda r: r.command_id)]
-
-
-def attach_standalone_simulator(mgr: CommandManager) -> None:
-    """Wire publish_fn to a local simulator that acks after a short delay."""
-
-    async def _sim(command_id: int, cmd_type: str, payload: dict[str, Any]) -> None:
-        async def _later() -> None:
-            await asyncio.sleep(0.4)
-            await mgr.deliver_ack(command_id, True, f"[sim] {cmd_type} applied")
-
-        asyncio.create_task(_later())
-
-    mgr.publish_fn = _sim

@@ -64,6 +64,13 @@ def normalize_srad(pkt: object) -> dict[str, Any]:
         "baro0": baro(0),
         "baro1": baro(1),
         "ground_altitude": _num(pkt, "ground_altitude") or 0.0,
+        # Onboard camera status reported by the FC firmware (confirmation is now
+        # baked into telemetry, not a separate CommandAck): the VTX/RunCam power
+        # switch and RunCam recording state.
+        "camera": {
+            "power": bool(_get(pkt, "runcam_power")),
+            "recording": bool(_get(pkt, "runcam_recording")),
+        },
         "gps": {
             "lat": _num(pkt, "gps_lat", "gps_latitude"),
             "lon": _num(pkt, "gps_lon", "gps_longitude"),

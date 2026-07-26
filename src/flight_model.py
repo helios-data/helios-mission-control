@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .constants import FLIGHT_STATES, mach_estimate
@@ -55,6 +55,10 @@ class SyntheticFlight:
     roll_deg: float = 0.0
     _apogee_alt: float = 0.0
     _land_t: float | None = None
+    # Onboard camera switch state, mutated by ground commands in STANDALONE so the
+    # telemetry stream confirms them (there is no separate CommandAck). Persists
+    # across flight loops — it is a physical switch, not integrator state.
+    camera: dict[str, bool] = field(default_factory=lambda: {"power": False, "recording": False})
 
     def reset(self) -> None:
         self.t = self.alt_agl = self.vel = 0.0
@@ -141,6 +145,7 @@ class SyntheticFlight:
             "baro1": {"healthy": healthy, "pressure": None, "temp": 20.0,
                       "altitude": round(baro1_alt, 2), "nis": 0.5, "faults": 0},
             "ground_altitude": self.ground_alt_m,
+            "camera": {"power": self.camera["power"], "recording": self.camera["recording"]},
             "gps": {"lat": round(lat, 6), "lon": round(lon, 6),
                     "alt": round(alt_msl, 1), "speed": round(abs(self.vel), 1),
                     "sats": 12, "fix": 3},

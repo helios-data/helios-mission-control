@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import rest, ws
-from .commands import CommandManager, attach_standalone_simulator
+from .commands import CommandManager
 from .hub import ConnectionHub
 from .packet_log import PacketLogger
 from .state import MissionState
@@ -185,14 +185,14 @@ async def lifespan(app: FastAPI):
     if standalone:
         from .standalone import run_standalone
 
-        attach_standalone_simulator(commands)
-        task = asyncio.create_task(run_standalone(state, hub), name="standalone")
+        # run_standalone wires commands.publish_fn to reflect camera commands back
+        # into the synthetic flight so telemetry confirms them (no CommandAck).
+        task = asyncio.create_task(run_standalone(state, hub, commands), name="standalone")
         log.info("running in STANDALONE mode")
     else:
         from .helios_bridge import HeliosBridge
 
         bridge = HeliosBridge(state, hub)
-        bridge.commands = commands
         _attach_bridge_publisher(bridge, commands)
         task = asyncio.create_task(bridge.run(), name="bridge")
         log.info("running in LIVE mode (connecting to Helios core)")
@@ -210,16 +210,16 @@ async def lifespan(app: FastAPI):
 
 
 def _attach_bridge_publisher(bridge, commands: CommandManager) -> None:
-    """Wire command publishing/ack to the live bridge once it's connected.
+    """Wire command publishing to the live bridge once it's connected.
 
-    The actual GroundCommand serialization + command_ack subscription is
-    implemented against the proposed protos (protos-proposed/) and only runs
-    when `make protos` has generated them. Until then this raises a clear error
-    rather than silently dropping commands.
+    The GroundCommand serialization runs against the falcon-protos GroundCommand
+    and only works when `make protos` has generated it; until then publish_command
+    raises a clear error rather than silently dropping commands. There is no
+    command_ack subscription — camera status is confirmed via telemetry.
     """
 
     async def _publish(command_id: int, cmd_type: str, payload: dict[str, Any]) -> None:
-        await bridge.publish_command(command_id, cmd_type, payload, commands)
+        await bridge.publish_command(command_id, cmd_type, payload)
 
     commands.publish_fn = _publish
 
