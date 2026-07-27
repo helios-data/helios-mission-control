@@ -73,7 +73,8 @@
 .rfd-form label { display: flex; flex-direction: column; gap: 2px; font-size: 10px;
   text-transform: uppercase; color: var(--text-dim); }
 .badge-pending { color: var(--warn); }
-.badge-sent { color: var(--ok); }
+.badge-sent { color: var(--warn); }         /* published, awaiting telemetry confirmation */
+.badge-acknowledged { color: var(--ok); }   /* telemetry confirmed the commanded state */
 .badge-error { color: var(--err); }
 /* Confirmed-from-telemetry camera status pills */
 .cam-status { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; }

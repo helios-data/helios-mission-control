@@ -62,6 +62,7 @@ export function SradPanel({ latest, ds }: { latest: SradFrame | null; ds: DataSt
             <Field k="ground alt" v={`${fmt(latest.ground_altitude)} m`} />
             <Field k="gps" v={`${fmtLatLon(latest.gps.lat)}, ${fmtLatLon(latest.gps.lon)}`} />
             <Field k="gps fix/sats" v={`fix ${latest.gps.fix} · ${latest.gps.sats} sats`} warn={latest.gps.fix < 2} />
+            <Field k="camera" v={`VTX ${(latest.camera?.power ? "ON" : "OFF")} · REC ${(latest.camera?.recording ? "ON" : "OFF")}`} />
           </div>
         </div>
       )}

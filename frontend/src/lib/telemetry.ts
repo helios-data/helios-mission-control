@@ -157,9 +157,10 @@ export interface MissionFrame {
   transitions: Transition[];
 }
 
-// Command log entry. Named "ack" for historical reasons, but there is no
-// CommandAck proto any more: status only reflects whether we published the
-// command (sent) or not (error). Camera confirmation comes via srad.camera.
+// Command log entry. There is no CommandAck proto any more: a command is "sent"
+// once published, then flips to "acknowledged" when telemetry (srad.camera)
+// confirms the commanded state took effect. "error" = publish failed. RFD config
+// is ground-local (no telemetry confirmation), so it stays "sent".
 export interface AckFrame {
   type: "ack";
   command_id: number;
@@ -167,7 +168,7 @@ export interface AckFrame {
   payload: Record<string, unknown>;
   operator: string;
   issued_at: number;
-  status: "pending" | "sent" | "error";
+  status: "pending" | "sent" | "acknowledged" | "error";
   message: string;
 }
 

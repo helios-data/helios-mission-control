@@ -165,6 +165,8 @@ async def lifespan(app: FastAPI):
     logger = PacketLogger(log_dir)
     commands = CommandManager(state, hub)
     state.subscribe(logger.sink)
+    # Acknowledge camera commands from telemetry (srad.camera), not a CommandAck.
+    state.subscribe(lambda source, frame: commands.observe_srad(frame) if source == "srad" else None)
 
     tile_dir = os.getenv("TILE_DIR", str(ROOT / "tiles"))
     tiles = TileCache(tile_dir, config.get("map"))

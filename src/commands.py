@@ -15,6 +15,7 @@ actual, rocket-reported result.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,8 @@ from .state import MissionState
 log = logging.getLogger("mission-control.commands")
 
 PublishFn = Callable[[int, str, dict[str, Any]], Awaitable[None]]
+# Camera command payload keys that telemetry (srad.camera) confirms.
+_CAMERA_KEYS = ("power", "recording")
 
 
 class CommandError(Exception):
@@ -36,9 +39,16 @@ class CommandError(Exception):
 
 
 class CommandStatus(StrEnum):
-    PENDING = "pending"  # record created, not yet published
-    SENT = "sent"        # published on the core / uplinked
-    ERROR = "error"      # publish failed or no publisher configured
+    PENDING = "pending"            # record created, not yet published
+    SENT = "sent"                  # published on the core / uplinked, awaiting confirmation
+    ACKNOWLEDGED = "acknowledged"  # telemetry confirms the commanded state took effect
+    ERROR = "error"                # publish failed or no publisher configured
+
+
+def _camera_matches(payload: dict[str, Any], cam: dict[str, Any]) -> bool:
+    """True when telemetry camera state satisfies every camera field in payload."""
+    keys = [k for k in _CAMERA_KEYS if k in payload]
+    return bool(keys) and all(bool(payload[k]) == bool(cam.get(k)) for k in keys)
 
 
 @dataclass
@@ -130,3 +140,25 @@ class CommandManager:
 
     def history(self) -> list[dict[str, Any]]:
         return [r.frame() for r in sorted(self.records.values(), key=lambda r: r.command_id)]
+
+    # ---- telemetry-driven acknowledgement --------------------------------
+    def observe_srad(self, frame: dict[str, Any]) -> None:
+        """Flip SENT camera commands to ACKNOWLEDGED when telemetry confirms them.
+
+        Confirmation is baked into the TelemetryPacket (srad.camera) rather than a
+        CommandAck, so we watch the telemetry stream: a published camera command is
+        acknowledged once srad.camera reflects its requested state. Called from a
+        MissionState sink on the running loop, so we can schedule the WS re-broadcast.
+        """
+        cam = frame.get("camera")
+        if not cam:
+            return
+        for rec in self.records.values():
+            if (
+                rec.type == "camera"
+                and rec.status is CommandStatus.SENT
+                and _camera_matches(rec.payload, cam)
+            ):
+                rec.status = CommandStatus.ACKNOWLEDGED
+                rec.message = "confirmed by telemetry"
+                asyncio.create_task(self.hub.broadcast(rec.frame()))

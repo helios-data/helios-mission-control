@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Panel } from "../components/Panel";
 import { api } from "../lib/api";
 import type { MissionStore } from "../lib/store";
@@ -28,8 +28,16 @@ function CameraControls({ store, operator }: { store: MissionStore; operator: st
   // telemetry, otherwise the commanded state).
   const powerOn = confirmed ? confirmed.power : commanded.power;
 
-  const send = (payload: Record<string, boolean>) =>
+  // Debounce: disable both buttons for 1s after a press so they can't be spammed.
+  const [cooling, setCooling] = useState(false);
+  const timer = useRef<number | null>(null);
+  const send = (payload: Record<string, boolean>) => {
+    if (cooling) return;
+    setCooling(true);
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setCooling(false), 1000);
     api.command("camera", payload, operator).catch((e) => alert((e as Error).message));
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -46,6 +54,7 @@ function CameraControls({ store, operator }: { store: MissionStore; operator: st
         </span>
         <button
           className={commanded.power ? "on" : ""}
+          disabled={cooling}
           onClick={() => send({ power: !commanded.power, ...(commanded.power ? { recording: false } : {}) })}
         >
           {commanded.power ? "ON" : "OFF"}
@@ -65,7 +74,7 @@ function CameraControls({ store, operator }: { store: MissionStore; operator: st
         </span>
         <button
           className={commanded.recording ? "on" : ""}
-          disabled={!powerOn}
+          disabled={!powerOn || cooling}
           onClick={() => send({ recording: !commanded.recording })}
         >
           {commanded.recording ? "REC" : "OFF"}
