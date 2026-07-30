@@ -167,9 +167,9 @@ export function CommandConsole({ store }: { store: MissionStore }) {
   const [previous, setPrevious] = useState<Record<string, number | null> | null>(null);
   const inFlight = IN_FLIGHT.has(store.mission?.flight_state ?? "STANDBY");
   const rfdLocked = inFlight && !override;
-  // Live registers off `current_rfd_config`; mission_config.json is the
-  // fallback until helios-cots-telemetry reports in.
-  const configured = store.rfdConfig?.config ?? store.config.rfd900x ?? {};
+  // Live registers off `current_rfd_config` — the only source; empty until
+  // helios-cots-telemetry reports in.
+  const configured = store.rfdConfig?.config ?? {};
   const liveConfig = store.rfdConfig !== null;
 
   // Link frames arrive at ~4 Hz, but tick locally too so the watchdog still
@@ -225,7 +225,7 @@ export function CommandConsole({ store }: { store: MissionStore }) {
           <div className="dim upper" style={{ fontSize: 11, marginBottom: 6 }}>
             RFD900x — ground modem + uplink
             <span className="faint" style={{ textTransform: "none", marginLeft: 6 }}>
-              {liveConfig ? "current values from modem" : "modem not reporting — showing config file"}
+              {liveConfig ? "current values from modem" : "modem not reporting — current values unknown"}
             </span>
           </div>
           <div className="rfd-form">

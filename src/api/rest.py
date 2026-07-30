@@ -51,8 +51,10 @@ class ConfigPatch(BaseModel):
     rocket_name: str | None = None
     expected_apogee_m: float | None = None
     ui: dict[str, Any] | None = None
-    rfd900x: dict[str, Any] | None = None
     ground_station: dict[str, Any] | None = None
+    # No `rfd900x`: the ground modem owns its own registers. They are read from
+    # the `current_rfd_config` event and written with an `rfd_config` command,
+    # never stored here.
 
 
 @router.patch("/config")

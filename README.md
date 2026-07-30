@@ -90,7 +90,7 @@ per-rocket parameters instead, by **linking a file** into the container (declare
 in [`config.json`](config.json) exactly like a volume, at
 `/app/config/mission_config.json`; override the path with `MISSION_CONFIG`). That
 file is **deep-merged on top of** the bundled defaults, so the launcher only
-carries the fields it owns (callsign, apogee, `ground_station`, `rfd900x`) while
+carries the fields it owns (callsign, apogee, `ground_station`) while
 UI-only defaults fall through. The intended layout is the rocket file with all of
 `mission_config.json`'s fields at the top level **beside** a `nodes` object (the
 launcher's component tree): the backend reads the top-level fields and ignores

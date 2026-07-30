@@ -305,9 +305,10 @@ function LinkStat({ label, value, color }: { label: string; value: string; color
 
 function ConfigPanel() {
   const cfg = store.config;
-  // Live ground-modem registers (current_rfd_config from helios-cots-telemetry)
-  // when we have them; mission_config.json is only the pre-connection fallback.
-  const rfd = store.rfdConfig?.config ?? cfg.rfd900x ?? {};
+  // Ground-modem registers as reported by helios-cots-telemetry
+  // (current_rfd_config). Empty until that node reports in, so the rows below
+  // read "—" rather than showing a stale config-file copy.
+  const rfd = store.rfdConfig?.config ?? {};
   return (
     <Panel title="Configuration">
       <div className="kv">

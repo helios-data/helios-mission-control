@@ -27,6 +27,19 @@ CAMERA_APPLY_DELAY_S = 0.4
 # re-publishes `current_rfd_config` with the new registers.
 RFD_APPLY_DELAY_S = 1.0
 
+# Registers the fake ground modem reports at startup, standing in for what
+# helios-cots-telemetry reads off the real one. Values are all inside the
+# accepted set in constants.RFD_RANGES / RFD_CHOICES, so the demo starts from a
+# config the form itself would accept.
+STANDALONE_RFD_CONFIG: dict[str, int] = {
+    "min_freq_khz": 902000,
+    "max_freq_khz": 928000,
+    "net_id": 25,
+    "tx_power_dbm": 30,
+    "air_speed_kbps": 64,
+    "num_channels": 50,
+}
+
 
 def _rfd_config_frame(cfg: dict[str, Any]) -> dict[str, Any]:
     """Build a `current_rfd_config` frame, matching telemetry.normalize_rfd_config."""
@@ -96,8 +109,8 @@ async def run_standalone(
     state.core_connected = True
 
     # Stand in for helios-cots-telemetry's startup publish of the modem's current
-    # registers, seeded from mission_config.json so the panel has real values.
-    state.ingest_rfd_config(_rfd_config_frame(state.config.get("rfd900x", {})))
+    # registers, so the admin panel has real values to show.
+    state.ingest_rfd_config(_rfd_config_frame(STANDALONE_RFD_CONFIG))
 
     log.info("STANDALONE synthetic flight running at %.0f Hz", hz)
     tick = 0

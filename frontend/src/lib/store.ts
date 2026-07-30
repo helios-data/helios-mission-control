@@ -37,8 +37,8 @@ export class MissionStore {
   link: LinkFrame | null = null;
   mission: MissionFrame | null = null;
   landing: PredictionFrame | null = null;
-  // Ground modem's live S-registers (`current_rfd_config`). Null until
-  // helios-cots-telemetry reports in; falls back to config.rfd900x for display.
+  // Ground modem's live S-registers (`current_rfd_config`) — the only source
+  // for them. Null until helios-cots-telemetry reports in.
   rfdConfig: RfdConfigFrame | null = null;
   config: MissionConfig = {};
   acks: AckFrame[] = [];

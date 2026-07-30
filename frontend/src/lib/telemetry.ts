@@ -180,7 +180,8 @@ export interface MissionConfig {
   expected_apogee_m?: number;
   gyro_units?: "deg" | "rad"; // units of TelemetryPacket gyro_x/y/z (assumed deg/s)
   ground_station?: { label?: string; lat: number; lon: number; alt_m: number };
-  rfd900x?: Record<string, number | boolean>;
+  // No rfd900x here: the ground modem's registers come from the modem itself,
+  // on `current_rfd_config` (see RfdConfigFrame), not from the config file.
   ui?: {
     refresh_hz?: number;
     srad_stale_seconds?: number;
