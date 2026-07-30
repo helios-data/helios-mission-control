@@ -32,6 +32,32 @@ IN_FLIGHT_STATES: frozenset[str] = frozenset(
     {"ASCENT", "MACH_LOCK", "DROGUE_DESCENT", "MAIN_DESCENT"}
 )
 
+# --- RFD900x ground-modem S-register limits (§4.7) ---------------------------
+# Accepted values for an `rfd_config` command. Keys must match falcon-protos
+# `RfdConfig` exactly -- `helios_bridge._proto_fields` drops anything that isn't
+# a real proto field, so an unknown key here would silently no-op.
+#
+# Mirrored in the frontend at `frontend/src/lib/rfd.ts` (RFD_FIELDS); keep the
+# two in sync. The admin form validates before sending, but this is the
+# authoritative check: a bad S-register write can take the ground link down.
+#
+# AIR_SPEED (S2), TXPOWER (S4) and NUM_CHANNELS (S10) are confirmed against the
+# RFD900x manual's S-register table. MIN_FREQ / MAX_FREQ (S8/S9) are the 900 MHz
+# ISM band edges and have NOT been confirmed against the modem -- check `ATI5`
+# before trusting them.
+RFD_RANGES: dict[str, tuple[int, int]] = {
+    "min_freq_khz": (902000, 927000),  # S8
+    "max_freq_khz": (903000, 928000),  # S9
+    "net_id": (0, 499),                # S3
+    "tx_power_dbm": (0, 30),           # S4  (30 dBm = 1 W)
+    "num_channels": (1, 51),           # S10
+}
+RFD_CHOICES: dict[str, tuple[int, ...]] = {
+    # S2, "one-byte form": the value is the rate in kbps, i.e. 64 -> 64000 bps.
+    "air_speed_kbps": (12, 56, 64, 100, 125, 188, 200, 224, 500, 750),
+}
+RFD_FIELDS: frozenset[str] = frozenset(RFD_RANGES) | frozenset(RFD_CHOICES)
+
 # --- Unit conversions (mirror the rest of the codebase, §1.2) ---
 FT_TO_M = 0.3048
 KNOTS_TO_MS = 0.514444

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from .constants import IN_FLIGHT_STATES
+from .constants import IN_FLIGHT_STATES, RFD_CHOICES, RFD_FIELDS, RFD_RANGES
 from .hub import ConnectionHub
 from .state import MissionState
 
@@ -49,6 +49,42 @@ def _camera_matches(payload: dict[str, Any], cam: dict[str, Any]) -> bool:
     """True when telemetry camera state satisfies every camera field in payload."""
     keys = [k for k in _CAMERA_KEYS if k in payload]
     return bool(keys) and all(bool(payload[k]) == bool(cam.get(k)) for k in keys)
+
+
+def _validate_rfd(payload: dict[str, Any]) -> None:
+    """Reject an rfd_config payload the ground modem wouldn't accept.
+
+    Every field is optional (a command may change one S-register), but anything
+    present must be an in-range integer. The admin form checks the same table
+    (frontend/src/lib/rfd.ts) before sending; this is the authoritative pass, so
+    the API can't be used to write a value that breaks the link.
+    """
+    unknown = sorted(set(payload) - RFD_FIELDS)
+    if unknown:
+        raise CommandError(f"unknown RFD field(s): {', '.join(unknown)}")
+
+    for key, value in list(payload.items()):
+        # JSON has no int/float distinction, so accept 30.0 but not 30.5.
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise CommandError(f"{key} must be a whole number, got {value!r}")
+        if value != int(value):
+            raise CommandError(f"{key} must be a whole number, got {value!r}")
+        value = payload[key] = int(value)
+        if key in RFD_RANGES:
+            lo, hi = RFD_RANGES[key]
+            if not lo <= value <= hi:
+                raise CommandError(f"{key}={value} out of range; must be {lo}-{hi}")
+        else:
+            choices = RFD_CHOICES[key]
+            if value not in choices:
+                raise CommandError(
+                    f"{key}={value} unsupported; must be one of "
+                    f"{', '.join(str(c) for c in choices)}"
+                )
+
+    lo_f, hi_f = payload.get("min_freq_khz"), payload.get("max_freq_khz")
+    if lo_f is not None and hi_f is not None and lo_f >= hi_f:
+        raise CommandError(f"min_freq_khz={lo_f} must be below max_freq_khz={hi_f}")
 
 
 @dataclass
@@ -126,6 +162,8 @@ class CommandManager:
                     f"RFD reconfig locked out during {self.state.flight_state}; "
                     "set override to proceed"
                 )
+            # Override skips the flight-state lockout, never the value check.
+            _validate_rfd(payload)
         elif cmd_type == "camera":
             # Recording requires camera power on (§4.7): either it is already on and
             # this command isn't turning it off, or this command turns it on.

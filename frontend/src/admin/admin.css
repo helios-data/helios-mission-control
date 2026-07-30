@@ -72,6 +72,14 @@
 .rfd-form { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
 .rfd-form label { display: flex; flex-direction: column; gap: 2px; font-size: 10px;
   text-transform: uppercase; color: var(--text-dim); }
+/* Accepted-range hint under each S-register field; swapped for .rfd-err when
+   the entered value is rejected. */
+.rfd-hint { font-family: var(--mono); font-size: 9px; text-transform: none;
+  color: var(--text-dim); opacity: 0.7; }
+.rfd-err { font-family: var(--mono); font-size: 9px; text-transform: none; color: var(--err); }
+.rfd-form .invalid { border-color: var(--err); }
+.errbox { border: 1px solid var(--err); background: #ff4d4d10; color: var(--err);
+  padding: 6px 8px; border-radius: 3px; font-size: 11px; margin-top: 6px; }
 .badge-pending { color: var(--warn); }
 .badge-sent { color: var(--warn); }         /* published, awaiting telemetry confirmation */
 .badge-acknowledged { color: var(--ok); }   /* telemetry confirmed the commanded state */

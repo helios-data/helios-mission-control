@@ -3,6 +3,7 @@ import { Panel } from "../components/Panel";
 import { api } from "../lib/api";
 import type { MissionStore } from "../lib/store";
 import { IN_FLIGHT } from "../lib/flightmeta";
+import { RFD_FIELDS, validateRfd, type RfdFieldSpec } from "../lib/rfd";
 
 // Confirmed on/off pill driven by telemetry (srad.camera). `null` = no telemetry
 // yet, so we can't confirm the onboard state.
@@ -90,29 +91,87 @@ function CameraControls({ store, operator }: { store: MissionStore; operator: st
   );
 }
 
-// RFD900x S-registers exposed for ground-modem reconfiguration (falcon-protos
-// RfdConfig). All map to SiK/RFD900x AT S-registers.
-const RFD_FIELDS: [string, string][] = [
-  ["min_freq_khz", "Min freq (kHz)"],
-  ["max_freq_khz", "Max freq (kHz)"],
-  ["net_id", "Net ID"],
-  ["tx_power_dbm", "TX power (dBm)"],
-  ["air_speed_kbps", "Air speed (kbps)"],
-  ["num_channels", "Num channels"],
-];
+// One S-register field. Blank = leave that register alone, so a command can
+// change one setting at a time (RfdConfig fields are all `optional`). Out-of-
+// range entries render an inline error and block ARM rather than being clamped
+// silently — a bad S-register write can take the ground link down.
+function RfdField({ spec, value, error, disabled, current, onChange }: {
+  spec: RfdFieldSpec;
+  value: string;
+  error?: string;
+  disabled: boolean;
+  current?: number | boolean;
+  onChange: (v: string) => void;
+}) {
+  const unit = spec.unit ? ` (${spec.unit})` : "";
+  // Sub-label doubles as the accepted-range spec until the operator gets it
+  // wrong, then it's replaced by the error. A dropdown already shows what it
+  // accepts, so it gets the label only.
+  const allowed = spec.kind === "range" ? `${spec.min}–${spec.max}${spec.unit ? ` ${spec.unit}` : ""}` : "";
+  // Selects have no placeholder, so the "leave alone" option carries the
+  // current value the way the number inputs' placeholder does.
+  const unchanged = current !== undefined ? `— unchanged (now ${current}) —` : "— unchanged —";
+
+  return (
+    <label>
+      <span>
+        {spec.label}{unit} <span className="faint">{spec.reg}</span>
+      </span>
+      {spec.kind === "enum" ? (
+        <select
+          className={error ? "invalid" : ""}
+          disabled={disabled}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          <option value="">{unchanged}</option>
+          {spec.values.map((v) => (
+            <option key={v} value={String(v)}>{v}</option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type="number"
+          className={error ? "invalid" : ""}
+          min={spec.min}
+          max={spec.max}
+          step={1}
+          placeholder={current !== undefined ? `now ${current}` : "unchanged"}
+          disabled={disabled}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
+      {error
+        ? <span className="rfd-err">{error}</span>
+        : <span className="rfd-hint">{spec.hint ?? allowed}</span>}
+    </label>
+  );
+}
 
 export function CommandConsole({ store }: { store: MissionStore }) {
   const [operator, setOperator] = useState("operator");
-  const [rfd, setRfd] = useState<Record<string, number>>({});
+  // Raw text per field so "" stays "unchanged" instead of collapsing to 0.
+  const [rfd, setRfd] = useState<Record<string, string>>({});
   const [armed, setArmed] = useState(false);
   const [override, setOverride] = useState(false);
   const inFlight = IN_FLIGHT.has(store.mission?.flight_state ?? "STANDBY");
   const rfdLocked = inFlight && !override;
+  const configured = store.config.rfd900x ?? {};
+
+  const check = validateRfd(rfd);
+  // Editing after arming re-arms: never execute a payload the operator hasn't
+  // seen validated in its final form.
+  const setField = (key: string, v: string) => {
+    setArmed(false);
+    setRfd({ ...rfd, [key]: v });
+  };
 
   const submitRfd = async () => {
     try {
-      await api.command("rfd_config", { ...rfd }, operator, override);
+      await api.command("rfd_config", check.payload, operator, override);
       setArmed(false);
+      setRfd({});
     } catch (e) {
       alert((e as Error).message);
     }
@@ -135,18 +194,27 @@ export function CommandConsole({ store }: { store: MissionStore }) {
             RFD900x — ground modem only
           </div>
           <div className="rfd-form">
-            {RFD_FIELDS.map(([key, label]) => (
-              <label key={key}>
-                {label}
-                <input
-                  type="number"
-                  disabled={rfdLocked}
-                  value={rfd[key] ?? ""}
-                  onChange={(e) => setRfd({ ...rfd, [key]: Number(e.target.value) })}
-                />
-              </label>
+            {RFD_FIELDS.map((spec) => (
+              <RfdField
+                key={spec.key}
+                spec={spec}
+                value={rfd[spec.key] ?? ""}
+                error={check.errors[spec.key]}
+                disabled={rfdLocked}
+                current={configured[spec.key]}
+                onChange={(v) => setField(spec.key, v)}
+              />
             ))}
           </div>
+          {!check.valid && (
+            <div className="errbox">
+              {Object.keys(check.errors).length} field
+              {Object.keys(check.errors).length > 1 ? "s are" : " is"} out of range — fix before arming
+            </div>
+          )}
+          {check.valid && check.warnings.map((w) => (
+            <div className="warnbox" key={w}>{w}</div>
+          ))}
           {inFlight && (
             <label className="warnbox" style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
@@ -155,12 +223,19 @@ export function CommandConsole({ store }: { store: MissionStore }) {
           )}
           <div className="row-actions">
             {!armed ? (
-              <button className="danger" disabled={rfdLocked} onClick={() => setArmed(true)}>
+              <button
+                className="danger"
+                disabled={rfdLocked || !check.valid || check.empty}
+                onClick={() => setArmed(true)}
+              >
                 ARM
               </button>
             ) : (
               <>
-                <button className="rec" onClick={submitRfd}>EXECUTE — write S-registers</button>
+                <button className="rec" onClick={submitRfd}>
+                  EXECUTE — write {Object.keys(check.payload).length} S-register
+                  {Object.keys(check.payload).length > 1 ? "s" : ""}
+                </button>
                 <button onClick={() => setArmed(false)}>Cancel</button>
               </>
             )}
