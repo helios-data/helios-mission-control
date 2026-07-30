@@ -9,7 +9,7 @@ html.transparent, html.transparent body { background: transparent !important; }
   padding: 14px;
   display: grid;
   grid-template-columns: 360px 1fr 360px;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   background:
     radial-gradient(1200px 700px at 50% -10%, var(--overlay-grad) 0%, var(--bg) 70%);
@@ -73,15 +73,56 @@ html.transparent .overlay { background: transparent; }
   background: var(--err); box-shadow: 0 0 8px var(--err); animation: pulse 1.4s ease-in-out infinite;
 }
 
-.ov-footer {
-  grid-column: 1 / -1;
-  display: flex; align-items: center; gap: 24px;
-  padding: 8px 18px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--header-glass);
+/* ---- bottom-of-column panels -------------------------------------------
+   Both are pinned to the bottom of their column so they fill the dead space
+   under the stats/health panels rather than floating mid-column. */
+.ov-left .school-panel, .ov-right .sponsor-panel { margin-top: auto; flex: 0 0 auto; }
+
+/* Symmetric padding — there's no heading above the mark to balance against. */
+.school-mark { display: grid; place-items: center; padding: 4px; }
+/* Width-capped rather than height-capped: the UBC narrow signature is a wide
+   lockup, so width is what governs its optical size in a 360px column. */
+.school-mark img { width: 78%; max-width: 260px; height: auto; opacity: 0.92; }
+
+/* Fixed height: sections hold different numbers of logos, and the panel must not
+   resize as they rotate or the whole right column would reflow on every cycle. */
+.sponsor-panel { height: 300px; display: flex; flex-direction: column; }
+.sponsor-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  grid-auto-rows: 1fr;
+  transition: opacity 450ms ease; /* FADE_MS in SponsorPanel.tsx */
 }
-.sponsors { display: flex; gap: 26px; align-items: center; overflow: hidden; }
-.sponsors img { height: 26px; opacity: 0.9; }
-.powered { margin-left: auto; font-size: 11px; letter-spacing: 0.16em; color: var(--text-dim); }
+
+/* An odd logo count leaves a lone tile in the bottom-left corner, which reads as
+   a mistake. Let it span the row instead — the area normalisation in fitLogo
+   keeps the artwork from ballooning to match the wider box. */
+.sponsor-grid[data-cols="2"] > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+/* Every plate is the same box no matter what it holds — identical geometry is
+   what makes a set of mismatched supplied logos read as one wall. Only the
+   background colour varies, and it's derived per-logo in lib/logo.ts. */
+.logo-plate {
+  position: relative;
+  border-radius: 5px;
+  overflow: hidden;
+  padding: 7px 9px;
+  background: #eef1f5;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.10);
+  min-height: 0;
+}
+/* Dark plates need a light hairline instead — a dark inset edge vanishes. */
+.logo-plate.on-dark { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14); }
+.logo-fit { position: relative; width: 100%; height: 100%; overflow: hidden; }
+
+.sponsor-dots { display: flex; gap: 5px; justify-content: center; margin-top: 8px; }
+.sponsor-dots span {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--text-faint); opacity: 0.35; transition: opacity 250ms ease;
+}
+.sponsor-dots span.on { opacity: 1; }
 
 .signal-row { display: flex; gap: 18px; align-items: center; }
 .awaiting { display: grid; place-items: center; color: var(--text-faint);

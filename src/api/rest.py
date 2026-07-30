@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
+from .. import sponsors
 from ..commands import CommandError
 
 log = logging.getLogger("mission-control.rest")
@@ -139,6 +140,20 @@ async def tile(req: Request, z: int, x: int, y: int) -> Response:
     # Cache real tiles hard (immutable for the container's life); don't cache blanks.
     headers = {"Cache-Control": "public, max-age=31536000, immutable"} if real else {"Cache-Control": "no-store"}
     return Response(content=data, media_type="image/png", headers=headers)
+
+
+# ---- sponsor logos -------------------------------------------------------
+@router.get("/sponsors")
+async def sponsor_sections(req: Request) -> dict[str, Any]:
+    """Rotation sections for the overlay's sponsor panel.
+
+    Re-scanned per request (it's a cheap directory listing) so logos dropped into
+    the linked volume appear without restarting the container. The served
+    directory itself is fixed at startup by the /sponsors mount.
+    """
+    directory = getattr(req.app.state, "sponsor_dir", None)
+    origin = getattr(req.app.state, "sponsor_origin", "none")
+    return {"origin": origin, "sections": sponsors.list_sections(directory)}
 
 
 # ---- mission clock -------------------------------------------------------

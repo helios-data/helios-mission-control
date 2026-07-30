@@ -5,6 +5,7 @@ import { GpsMap } from "../components/GpsMap";
 import { Rocket3D } from "../components/Rocket3D";
 import { SignalDot } from "../components/SignalDot";
 import { EventTicker } from "../components/EventTicker";
+import { SponsorPanel, useSponsors } from "../components/SponsorPanel";
 import { getStore, useStore, hasGpsFix } from "../lib/store";
 import { sourceState, type DataState } from "../lib/fallback";
 import { useTheme } from "../lib/theme";
@@ -39,14 +40,18 @@ function useProfile(): Profile | undefined {
   return p;
 }
 
+// `h` is optional: a panel whose content is self-explanatory (the school mark)
+// reads better with no heading at all than with a redundant one.
 function Panel({ h, children, className = "", stale = false, right }: {
-  h: string; children: ReactNode; className?: string; stale?: boolean; right?: ReactNode;
+  h?: string; children: ReactNode; className?: string; stale?: boolean; right?: ReactNode;
 }) {
   return (
     <div className={`ov-panel panel-corner ${className} ${stale ? "stale" : ""}`}>
-      <div className="h" style={right ? { display: "flex", justifyContent: "space-between", alignItems: "center" } : undefined}>
-        <span>{h}</span>{right}
-      </div>
+      {h && (
+        <div className="h" style={right ? { display: "flex", justifyContent: "space-between", alignItems: "center" } : undefined}>
+          <span>{h}</span>{right}
+        </div>
+      )}
       {children}
     </div>
   );
@@ -71,6 +76,7 @@ export function App() {
   const [showPred, togglePred] = usePredictionToggle();
   const now = useClocks();
   const profile = useProfile();
+  const sponsors = useSponsors();
   const cfg = store.config;
   const ui = cfg.ui ?? {};
   const sradDs = sourceState(store.link, "srad", ui.srad_stale_seconds ?? 5);
@@ -149,6 +155,17 @@ export function App() {
             <Stat label="MAX G" value={fmt(m?.max_g ?? 0, 1)} unit="g" size={18} />
           </div>
         </Panel>
+        {/* Pinned to the bottom of the column (margin-top:auto in CSS). */}
+        <Panel className="school-panel">
+          <div className="school-mark">
+            <img
+              src={theme === "light"
+                ? "/brand/UBC-logo-2018-narrowsig-blue-rgb72.png"
+                : "/brand/UBC-logo-2018-narrowsig-white-rgb72.png"}
+              alt="The University of British Columbia"
+            />
+          </div>
+        </Panel>
       </div>
 
       {/* CENTER */}
@@ -210,11 +227,13 @@ export function App() {
             <SignalRow label="COTS · APRS" ds={cotsDs} rate={store.link?.cots.rate_hz ?? 0} />
           </div>
         </Panel>
+        {/* Pinned to the bottom of the column; hidden entirely when no logos. */}
+        {sponsors.length > 0 && (
+          <Panel h="Our Sponsors" className="sponsor-panel">
+            <SponsorPanel sections={sponsors} intervalS={ui.sponsor_rotate_seconds ?? 10} />
+          </Panel>
+        )}
       </div>
-
-      <footer className="ov-footer">
-        <span className="powered">POWERED BY PROJECT HELIOS</span>
-      </footer>
     </div>
   );
 }

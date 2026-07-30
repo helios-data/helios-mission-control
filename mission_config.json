@@ -24,6 +24,7 @@
     "refresh_hz": 20,
     "srad_stale_seconds": 5,
     "cots_stale_seconds": 60,
+    "sponsor_rotate_seconds": 10,
     "video_url": "http://localhost:1984/api/webrtc?src=cloudburst"
   },
   "map": {

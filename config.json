@@ -4,6 +4,7 @@
   "volumes": [
     { "type": "folder", "name": "/app/logs", "source": "" },
     { "type": "folder", "name": "/app/tiles", "source": "" },
+    { "type": "folder", "name": "/app/sponsorships", "source": "" },
     { "type": "file", "name": "/app/config/mission_config.json", "source": "" }
   ],
   "flags": [],

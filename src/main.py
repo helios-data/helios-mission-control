@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import sponsors
 from .api import rest, ws
 from .commands import CommandManager
 from .hub import ConnectionHub
@@ -234,6 +235,18 @@ def create_app() -> FastAPI:
     # Repo assets (logos, expected_profile.csv) available to the frontend at runtime.
     if ASSETS_DIR.exists():
         app.mount("/brand", StaticFiles(directory=str(ASSETS_DIR)), name="brand")
+
+    # Sponsor logos: the launcher-linked /app/sponsorships volume, or the bundled
+    # sample set in STANDALONE/dev. Resolved once at startup — the volume is
+    # mounted before the process starts, and the overlay runs for a whole flight.
+    sponsor_dir, sponsor_origin = sponsors.resolve_dir()
+    app.state.sponsor_dir = sponsor_dir
+    app.state.sponsor_origin = sponsor_origin
+    if sponsor_dir is not None:
+        app.mount("/sponsors", StaticFiles(directory=str(sponsor_dir)), name="sponsors")
+        log.info("serving sponsor logos from %s (%s)", sponsor_dir, sponsor_origin)
+    else:
+        log.info("no sponsor logos found; sponsor panel will stay hidden")
 
     # Built frontend bundles (Vite base='/static/').
     if (FRONTEND_DIST / "static").exists():
