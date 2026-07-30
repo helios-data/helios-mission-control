@@ -46,7 +46,8 @@ async def get_config(req: Request) -> dict[str, Any]:
 
 class ConfigPatch(BaseModel):
     # Locally-owned, editable subset (§3.2, Open Question 3).
-    callsign: str | None = None
+    # `callsign` is deliberately absent: it mirrors TeleGPS's direwolf.conf MYCALL
+    # and is owned by mission_config.json, so admin displays it read-only.
     rocket_name: str | None = None
     expected_apogee_m: float | None = None
     ui: dict[str, Any] | None = None

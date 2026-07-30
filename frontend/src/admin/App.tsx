@@ -306,17 +306,14 @@ function LinkStat({ label, value, color }: { label: string; value: string; color
 function ConfigPanel() {
   const cfg = store.config;
   const rfd = cfg.rfd900x ?? {};
-  const [callsign, setCallsign] = useState("");
-  useEffect(() => { setCallsign(cfg.callsign ?? ""); }, [cfg.callsign]);
   return (
     <Panel title="Configuration">
       <div className="kv">
         <span className="k">rocket</span><span className="v">{cfg.rocket_name ?? "—"}</span>
+        {/* Read-only: callsign comes from mission_config.json (mirrors TeleGPS
+            direwolf.conf MYCALL), so it is not editable here. */}
         <span className="k">callsign</span>
-        <span className="v">
-          <input value={callsign} onChange={(e) => setCallsign(e.target.value)}
-            onBlur={() => api.patchConfig({ callsign })} style={{ width: 100, textAlign: "right" }} />
-        </span>
+        <span className="v">{cfg.callsign || "—"}</span>
         <span className="k">expected apogee</span><span className="v">{fmt(cfg.expected_apogee_m ?? 0, 0)} m</span>
         <span className="k">refresh</span><span className="v">{cfg.ui?.refresh_hz ?? "—"} Hz</span>
         <span className="k">video src</span><span className="v">{cfg.ui?.video_source ?? "—"}</span>
