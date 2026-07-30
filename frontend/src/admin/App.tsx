@@ -305,7 +305,9 @@ function LinkStat({ label, value, color }: { label: string; value: string; color
 
 function ConfigPanel() {
   const cfg = store.config;
-  const rfd = cfg.rfd900x ?? {};
+  // Live ground-modem registers (current_rfd_config from helios-cots-telemetry)
+  // when we have them; mission_config.json is only the pre-connection fallback.
+  const rfd = store.rfdConfig?.config ?? cfg.rfd900x ?? {};
   return (
     <Panel title="Configuration">
       <div className="kv">
@@ -322,6 +324,8 @@ function ConfigPanel() {
         <span className="v">{String(rfd.net_id ?? "—")} / {String(rfd.min_freq_khz ?? "—")}–{String(rfd.max_freq_khz ?? "—")}</span>
         <span className="k">RFD tx/air</span>
         <span className="v">{String(rfd.tx_power_dbm ?? "—")}dBm / {String(rfd.air_speed_kbps ?? "—")}kbps</span>
+        <span className="k">RFD channels</span>
+        <span className="v">{String(rfd.num_channels ?? "—")}</span>
       </div>
     </Panel>
   );

@@ -11,15 +11,6 @@
     "lon": -106.9749,
     "alt_m": 1401
   },
-  "rfd900x": {
-    "min_freq_khz": 902000,
-    "max_freq_khz": 928000,
-    "net_id": 25,
-    "tx_power_dbm": 30,
-    "air_speed_kbps": 64,
-    "ecc": true,
-    "mavlink": false
-  },
   "ui": {
     "refresh_hz": 20,
     "srad_stale_seconds": 5,

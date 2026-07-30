@@ -80,6 +80,8 @@
 .rfd-form .invalid { border-color: var(--err); }
 .errbox { border: 1px solid var(--err); background: #ff4d4d10; color: var(--err);
   padding: 6px 8px; border-radius: 3px; font-size: 11px; margin-top: 6px; }
+/* Ground-modem confirmation line under the RFD form. */
+.rfd-status { font-family: var(--mono); font-size: 10px; margin-top: 6px; }
 .badge-pending { color: var(--warn); }
 .badge-sent { color: var(--warn); }         /* published, awaiting telemetry confirmation */
 .badge-acknowledged { color: var(--ok); }   /* telemetry confirmed the commanded state */

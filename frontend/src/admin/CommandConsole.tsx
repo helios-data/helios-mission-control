@@ -157,7 +157,13 @@ export function CommandConsole({ store }: { store: MissionStore }) {
   const [override, setOverride] = useState(false);
   const inFlight = IN_FLIGHT.has(store.mission?.flight_state ?? "STANDBY");
   const rfdLocked = inFlight && !override;
-  const configured = store.config.rfd900x ?? {};
+  // Live registers off `current_rfd_config`; mission_config.json is the
+  // fallback until helios-cots-telemetry reports in.
+  const configured = store.rfdConfig?.config ?? store.config.rfd900x ?? {};
+  const liveConfig = store.rfdConfig !== null;
+
+  // Latest rfd_config command, for the confirmed-by-modem readout.
+  const lastRfdAck = store.acks.filter((a) => a.command_type === "rfd_config").at(-1) ?? null;
 
   const check = validateRfd(rfd);
   // Editing after arming re-arms: never execute a payload the operator hasn't
@@ -191,7 +197,10 @@ export function CommandConsole({ store }: { store: MissionStore }) {
         {/* RFD900x ground-modem config */}
         <div>
           <div className="dim upper" style={{ fontSize: 11, marginBottom: 6 }}>
-            RFD900x — ground modem only
+            RFD900x — ground modem + uplink
+            <span className="faint" style={{ textTransform: "none", marginLeft: 6 }}>
+              {liveConfig ? "current values from modem" : "modem not reporting — showing config file"}
+            </span>
           </div>
           <div className="rfd-form">
             {RFD_FIELDS.map((spec) => (
@@ -201,7 +210,7 @@ export function CommandConsole({ store }: { store: MissionStore }) {
                 value={rfd[spec.key] ?? ""}
                 error={check.errors[spec.key]}
                 disabled={rfdLocked}
-                current={configured[spec.key]}
+                current={configured[spec.key] ?? undefined}
                 onChange={(v) => setField(spec.key, v)}
               />
             ))}
@@ -240,6 +249,20 @@ export function CommandConsole({ store }: { store: MissionStore }) {
               </>
             )}
           </div>
+
+          {/* Confirmation: helios-cots-telemetry re-publishes current_rfd_config
+              after it writes the modem, which flips the command to acknowledged. */}
+          {lastRfdAck && (
+            <div className="rfd-status">
+              {lastRfdAck.status === "acknowledged" ? (
+                <span className="cam-on">✓ ground modem confirmed #{lastRfdAck.command_id}</span>
+              ) : lastRfdAck.status === "error" ? (
+                <span className="cam-rec">✗ #{lastRfdAck.command_id} failed — {lastRfdAck.message}</span>
+              ) : (
+                <span className="faint">awaiting ground modem confirmation for #{lastRfdAck.command_id}…</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

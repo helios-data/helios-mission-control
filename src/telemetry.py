@@ -12,9 +12,10 @@ crashing — but reconcile them against the real .proto once the submodule lands
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
-from .constants import FT_TO_M, KNOTS_TO_MS, flight_state_name
+from .constants import FT_TO_M, KNOTS_TO_MS, RFD_CONFIG_FIELDS, flight_state_name
 
 MIN_PACKET_BYTES = 15  # skip runts (§1.2 robustness pattern)
 
@@ -32,6 +33,14 @@ def _num(obj: object, *names: str) -> float | None:
     v = _get(obj, *names)
     try:
         return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _int(obj: object, *names: str) -> int | None:
+    v = _get(obj, *names)
+    try:
+        return int(v) if v is not None else None
     except (TypeError, ValueError):
         return None
 
@@ -128,6 +137,23 @@ def normalize_landing(pkt: object) -> dict[str, Any]:
         "current_alt_agl": _num(pkt, "current_alt_agl"),
         "flight_state": _num(pkt, "flight_state"),
         "status": _get(pkt, "status"),
+    }
+
+
+def normalize_rfd_config(msg: object) -> dict[str, Any]:
+    """betterproto RfdConfig -> normalized rfd_config frame.
+
+    Published by helios-cots-telemetry on the ``current_rfd_config`` event: once
+    at startup carrying the ground modem's current S-registers, and again after
+    each successful write. Every RfdConfig field is `optional`, so a register the
+    node didn't report stays ``None`` here rather than defaulting to 0 — the UI
+    must be able to tell "unknown" from "actually zero". Mirrors RfdConfigFrame
+    in frontend/src/lib/telemetry.ts.
+    """
+    return {
+        "type": "rfd_config",
+        "config": {k: _int(msg, k) for k in RFD_CONFIG_FIELDS},
+        "received_at": time.time(),
     }
 
 

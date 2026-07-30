@@ -130,6 +130,9 @@ class MissionState:
         self.srad_latest: dict[str, Any] | None = None
         self.cots_latest: dict[str, Any] | None = None
         self.landing_latest: dict[str, Any] | None = None
+        # Ground modem's actual S-registers, as reported by helios-cots-telemetry
+        # on `current_rfd_config`. None until that node reports in.
+        self.rfd_config_latest: dict[str, Any] | None = None
         self.srad_history: deque[dict[str, Any]] = deque(maxlen=srad_ring)
         self.cots_history: deque[dict[str, Any]] = deque(maxlen=cots_ring)
 
@@ -223,6 +226,16 @@ class MissionState:
         self.landing_link.mark()
         self._emit("landing", pred)
         return pred
+
+    def ingest_rfd_config(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        """Store the ground modem's reported S-registers and fan the frame out.
+
+        Emitted as a sink event so CommandManager can flip a sent rfd_config
+        command to ACKNOWLEDGED once the modem reports the values back.
+        """
+        self.rfd_config_latest = cfg
+        self._emit("rfd_config", cfg)
+        return cfg
 
     def record_srad_error(self) -> None:
         self.srad_link.mark_error()
@@ -338,4 +351,5 @@ class MissionState:
             "srad": self.srad_latest,
             "cots": self.cots_latest,
             "prediction": self.landing_latest,
+            "rfd_config": self.rfd_config_latest,
         }

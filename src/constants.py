@@ -58,6 +58,12 @@ RFD_CHOICES: dict[str, tuple[int, ...]] = {
 }
 RFD_FIELDS: frozenset[str] = frozenset(RFD_RANGES) | frozenset(RFD_CHOICES)
 
+# RfdConfig fields in proto declaration order, for reading a reported config off
+# the `current_rfd_config` event. Same set as RFD_FIELDS, but ordered.
+RFD_CONFIG_FIELDS: tuple[str, ...] = (
+    "min_freq_khz", "max_freq_khz", "net_id", "tx_power_dbm", "air_speed_kbps", "num_channels",
+)
+
 # --- Unit conversions (mirror the rest of the codebase, §1.2) ---
 FT_TO_M = 0.3048
 KNOTS_TO_MS = 0.514444

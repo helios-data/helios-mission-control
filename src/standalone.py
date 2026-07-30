@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from .commands import CommandManager
+from .constants import RFD_CONFIG_FIELDS
 from .flight_model import SyntheticFlight
 from .hub import ConnectionHub
 from .state import MissionState
@@ -21,30 +23,57 @@ log = logging.getLogger("mission-control.standalone")
 # Simulated ground->uplink->FC->telemetry round-trip before a camera command
 # shows up as confirmed in the telemetry stream.
 CAMERA_APPLY_DELAY_S = 0.4
+# Simulated AT-command round-trip on the ground modem before helios-cots-telemetry
+# re-publishes `current_rfd_config` with the new registers.
+RFD_APPLY_DELAY_S = 1.0
 
 
-def _attach_camera_publisher(commands: CommandManager, flight: SyntheticFlight) -> None:
-    """Reflect camera commands back into the synthetic flight after a short delay.
+def _rfd_config_frame(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Build a `current_rfd_config` frame, matching telemetry.normalize_rfd_config."""
+    return {
+        "type": "rfd_config",
+        "config": {k: cfg.get(k) for k in RFD_CONFIG_FIELDS},
+        "received_at": time.time(),
+    }
 
-    Replaces the old CommandAck simulator: the confirmation now arrives via the
-    telemetry stream (srad.camera), just like on real hardware. RFD config is
-    ground-local, so there is nothing to reflect for it in STANDALONE.
+
+def _attach_publisher(
+    commands: CommandManager, flight: SyntheticFlight, state: MissionState, hub: ConnectionHub
+) -> None:
+    """Reflect commands back the way real hardware confirms them.
+
+    Replaces the old CommandAck simulator; both confirmations now arrive on the
+    same paths as in LIVE mode. Camera state comes back through the telemetry
+    stream (srad.camera). RFD config comes back as a `current_rfd_config` frame,
+    standing in for helios-cots-telemetry re-publishing after it writes the
+    ground modem — which is what acknowledges the command.
     """
 
     async def _publish(command_id: int, cmd_type: str, payload: dict[str, Any]) -> None:
-        if cmd_type != "camera":
-            return
+        if cmd_type == "camera":
 
-        async def _apply() -> None:
-            await asyncio.sleep(CAMERA_APPLY_DELAY_S)
-            if "power" in payload:
-                flight.camera["power"] = bool(payload["power"])
-                if not flight.camera["power"]:
-                    flight.camera["recording"] = False  # no recording without power
-            if "recording" in payload:
-                flight.camera["recording"] = bool(payload["recording"]) and flight.camera["power"]
+            async def _apply_camera() -> None:
+                await asyncio.sleep(CAMERA_APPLY_DELAY_S)
+                if "power" in payload:
+                    flight.camera["power"] = bool(payload["power"])
+                    if not flight.camera["power"]:
+                        flight.camera["recording"] = False  # no recording without power
+                if "recording" in payload:
+                    flight.camera["recording"] = (
+                        bool(payload["recording"]) and flight.camera["power"]
+                    )
 
-        asyncio.create_task(_apply())
+            asyncio.create_task(_apply_camera())
+
+        elif cmd_type == "rfd_config":
+
+            async def _apply_rfd() -> None:
+                await asyncio.sleep(RFD_APPLY_DELAY_S)
+                current = dict((state.rfd_config_latest or {}).get("config") or {})
+                current.update(payload)
+                await hub.broadcast(state.ingest_rfd_config(_rfd_config_frame(current)))
+
+            asyncio.create_task(_apply_rfd())
 
     commands.publish_fn = _publish
 
@@ -62,9 +91,13 @@ async def run_standalone(
         base_lon=gs.get("lon", -106.9749),
     )
     if commands is not None:
-        _attach_camera_publisher(commands, flight)
+        _attach_publisher(commands, flight, state, hub)
     callsign = state.config.get("callsign", "N0CALL")
     state.core_connected = True
+
+    # Stand in for helios-cots-telemetry's startup publish of the modem's current
+    # registers, seeded from mission_config.json so the panel has real values.
+    state.ingest_rfd_config(_rfd_config_frame(state.config.get("rfd900x", {})))
 
     log.info("STANDALONE synthetic flight running at %.0f Hz", hz)
     tick = 0

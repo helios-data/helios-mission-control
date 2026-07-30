@@ -7,7 +7,7 @@
 import { useSyncExternalStore } from "react";
 import type {
   AckFrame, CotsFrame, EventType, Frame, LinkFrame, MissionConfig, MissionEvent,
-  MissionFrame, PredictionFrame, SradFrame,
+  MissionFrame, PredictionFrame, RfdConfigFrame, SradFrame,
 } from "./telemetry";
 import { EVENT_META } from "./eventmeta";
 
@@ -37,6 +37,9 @@ export class MissionStore {
   link: LinkFrame | null = null;
   mission: MissionFrame | null = null;
   landing: PredictionFrame | null = null;
+  // Ground modem's live S-registers (`current_rfd_config`). Null until
+  // helios-cots-telemetry reports in; falls back to config.rfd900x for display.
+  rfdConfig: RfdConfigFrame | null = null;
   config: MissionConfig = {};
   acks: AckFrame[] = [];
   events: MissionEvent[] = [];
@@ -133,12 +136,14 @@ export class MissionStore {
         if (f.srad) this.ingestSrad(f.srad);
         if (f.cots) this.ingestCots(f.cots);
         if (f.prediction) this.landing = f.prediction;
+        if (f.rfd_config) this.rfdConfig = f.rfd_config;
         break;
       case "srad": this.ingestSrad(f); break;
       case "cots": this.ingestCots(f); break;
       case "link": this.link = f; break;
       case "mission": this.setMission(f); break;
       case "prediction": this.landing = f; break;
+      case "rfd_config": this.rfdConfig = f; break;
       case "config": { const { type, ...rest } = f; this.config = rest; break; }
       case "ack": this.ingestAck(f); break;
     }

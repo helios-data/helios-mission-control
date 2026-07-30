@@ -194,6 +194,17 @@ export interface MissionConfig {
   };
 }
 
+// Ground modem's actual S-registers, reported by helios-cots-telemetry on the
+// `current_rfd_config` event (once at startup, then after every write it
+// applies) and normalized by src/telemetry.py:normalize_rfd_config. Every field
+// is optional in RfdConfig, so an unreported register is null — which must read
+// as "unknown", not as 0.
+export interface RfdConfigFrame {
+  type: "rfd_config";
+  config: Record<string, number | null>;
+  received_at: number; // epoch seconds
+}
+
 export interface SnapshotFrame {
   type: "snapshot";
   config: MissionConfig;
@@ -202,6 +213,7 @@ export interface SnapshotFrame {
   srad: SradFrame | null;
   cots: CotsFrame | null;
   prediction: PredictionFrame | null;
+  rfd_config: RfdConfigFrame | null;
 }
 
 export type Frame =
@@ -211,5 +223,6 @@ export type Frame =
   | MissionFrame
   | AckFrame
   | PredictionFrame
+  | RfdConfigFrame
   | SnapshotFrame
   | ({ type: "config" } & MissionConfig);

@@ -13,7 +13,13 @@ from typing import Any
 
 from .hub import ConnectionHub
 from .state import MissionState
-from .telemetry import MIN_PACKET_BYTES, normalize_cots, normalize_landing, normalize_srad
+from .telemetry import (
+    MIN_PACKET_BYTES,
+    normalize_cots,
+    normalize_landing,
+    normalize_rfd_config,
+    normalize_srad,
+)
 
 log = logging.getLogger("mission-control.bridge")
 
@@ -24,11 +30,24 @@ COTS_EVENT = "aprs"
 # Landing predictor (separate Helios node; optional — may not be running).
 LANDING_ADDRESS = "Helios.Services.LandingPredictor"
 LANDING_EVENT = "landing_prediction"
+# Ground modem's current S-registers, published by helios-cots-telemetry (which
+# owns the RFD serial port): once at startup, then again after each write it
+# applies. Same address we publish `command` on, since it's the same node.
+RFD_CONFIG_ADDRESS = SRAD_ADDRESS
+RFD_CONFIG_EVENT = "current_rfd_config"
 NODE_URI = "Helios.Services.Mission_Control"
 
 # Retry cadence for the (optional) landing-prediction subscription, kept isolated
 # so a missing/idle predictor never tears down the SRAD/COTS subscriptions.
 LANDING_RETRY_S = 5.0
+
+# The one-shot seed of `current_rfd_config` races helios-cots-telemetry's startup
+# — that node may not have registered its address or published yet when we
+# connect. Retry on a 1s cadence, bounded, then give up and rely on the
+# subscription (which picks up the next publish whenever it happens).
+RFD_SEED_RETRY_S = 1.0
+RFD_SEED_MAX_TRIES = 30
+RFD_CONFIG_RETRY_S = 5.0
 
 # Bound the one-shot seed get_event. If a component (e.g. TeleGPS) hasn't
 # registered its address yet, the core replies with event_error and the SDK
@@ -85,6 +104,8 @@ class HeliosBridge:
                     self._subscribe_srad(),
                     self._subscribe_cots(),
                     self._subscribe_landing(),
+                    self._seed_rfd_config(),
+                    self._subscribe_rfd_config(),
                     self._housekeeping(),
                 )
             except asyncio.CancelledError:
@@ -191,6 +212,92 @@ class HeliosBridge:
         try:
             return normalize_landing(cls.parse(data))
         except Exception:  # noqa: BLE001 - a bad prediction frame must not drop the stream
+            return None
+
+    # ---- ground modem config (current_rfd_config) ------------------------
+    def _rfd_config_cls(self) -> Any | None:
+        try:
+            from src.generated import RfdConfig  # noqa: PLC0415 - lazy by design
+        except ImportError:
+            log.warning(
+                "RfdConfig proto not compiled; ground-modem config display disabled "
+                "until `make protos`"
+            )
+            return None
+        return RfdConfig
+
+    async def _seed_rfd_config(self) -> None:
+        """Pull the modem's current S-registers with get_event, retrying on a 1s cadence.
+
+        helios-cots-telemetry publishes this once on startup, so we may well
+        connect before it exists. Retry up to RFD_SEED_MAX_TRIES, then stop and
+        let _subscribe_rfd_config catch the next publish — an unbounded loop here
+        would hammer the core forever when the node simply isn't deployed.
+        """
+        cls = self._rfd_config_cls()
+        if cls is None:
+            return
+        for attempt in range(1, RFD_SEED_MAX_TRIES + 1):
+            if self.state.rfd_config_latest is not None:
+                return  # the subscription beat us to it
+            try:
+                ev = await asyncio.wait_for(
+                    self.client.get_event(
+                        address=RFD_CONFIG_ADDRESS, event_name=RFD_CONFIG_EVENT
+                    ),
+                    timeout=SEED_TIMEOUT_S,
+                )
+                if ev and getattr(ev, "data", None):
+                    frame = self._parse_rfd_config(cls, ev.data)
+                    if frame is not None:
+                        await self.hub.broadcast(self.state.ingest_rfd_config(frame))
+                        log.info("seeded ground-modem config after %d attempt(s)", attempt)
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - incl. TimeoutError; node may not be up yet
+                pass
+            await asyncio.sleep(RFD_SEED_RETRY_S)
+        log.warning(
+            "no %s from %s after %d attempts; waiting on the subscription instead",
+            RFD_CONFIG_EVENT, RFD_CONFIG_ADDRESS, RFD_SEED_MAX_TRIES,
+        )
+
+    async def _subscribe_rfd_config(self) -> None:
+        """Live ground-modem config updates, self-retrying like the predictor.
+
+        helios-cots-telemetry re-publishes after every write it applies, which is
+        what acknowledges an rfd_config command. Isolated retry loop so a node
+        that isn't running never tears down the telemetry subscriptions.
+        """
+        cls = self._rfd_config_cls()
+        if cls is None:
+            return
+        while True:
+            try:
+                async with self.client.subscribe_event(
+                    address=RFD_CONFIG_ADDRESS, event_name=RFD_CONFIG_EVENT
+                ) as events:
+                    async for event in events:
+                        frame = self._parse_rfd_config(cls, event.data)
+                        if frame is not None:
+                            await self.hub.broadcast(self.state.ingest_rfd_config(frame))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - optional node; retry, don't tear down telemetry
+                log.warning(
+                    "%s subscription error (%s); retrying in %.0fs",
+                    RFD_CONFIG_EVENT, exc, RFD_CONFIG_RETRY_S,
+                )
+                await asyncio.sleep(RFD_CONFIG_RETRY_S)
+
+    def _parse_rfd_config(self, cls: Any, data: bytes) -> dict[str, Any] | None:
+        if not data:
+            return None
+        try:
+            return normalize_rfd_config(cls.parse(data))
+        except Exception:  # noqa: BLE001 - a bad config frame must not drop the stream
+            log.warning("could not parse %s payload", RFD_CONFIG_EVENT)
             return None
 
     # ---- command path (§5) ----------------------------------------------

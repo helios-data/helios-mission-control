@@ -200,3 +200,23 @@ class CommandManager:
                 rec.status = CommandStatus.ACKNOWLEDGED
                 rec.message = "confirmed by telemetry"
                 asyncio.create_task(self.hub.broadcast(rec.frame()))
+
+    def observe_rfd_config(self, frame: dict[str, Any]) -> None:
+        """Flip SENT rfd_config commands to ACKNOWLEDGED when the modem reports back.
+
+        helios-cots-telemetry re-publishes `current_rfd_config` after it writes
+        the ground modem, so a command is confirmed once every register it asked
+        for is reflected in the reported config. Same shape as observe_srad: a
+        MissionState sink on the running loop, so the WS re-broadcast can be
+        scheduled.
+        """
+        cfg = frame.get("config")
+        if not cfg:
+            return
+        for rec in self.records.values():
+            if rec.type != "rfd_config" or rec.status is not CommandStatus.SENT:
+                continue
+            if all(cfg.get(k) == v for k, v in rec.payload.items()):
+                rec.status = CommandStatus.ACKNOWLEDGED
+                rec.message = "confirmed by ground modem"
+                asyncio.create_task(self.hub.broadcast(rec.frame()))

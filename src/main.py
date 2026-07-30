@@ -166,8 +166,18 @@ async def lifespan(app: FastAPI):
     logger = PacketLogger(log_dir)
     commands = CommandManager(state, hub)
     state.subscribe(logger.sink)
-    # Acknowledge camera commands from telemetry (srad.camera), not a CommandAck.
-    state.subscribe(lambda source, frame: commands.observe_srad(frame) if source == "srad" else None)
+
+    # There is no CommandAck proto: commands are confirmed by what comes back on
+    # the wire. Camera state arrives in telemetry (srad.camera); the ground
+    # modem's registers arrive on `current_rfd_config` after cots-telemetry
+    # applies a write.
+    def _confirm_commands(source: str, frame: dict[str, Any]) -> None:
+        if source == "srad":
+            commands.observe_srad(frame)
+        elif source == "rfd_config":
+            commands.observe_rfd_config(frame)
+
+    state.subscribe(_confirm_commands)
 
     tile_dir = os.getenv("TILE_DIR", str(ROOT / "tiles"))
     tiles = TileCache(tile_dir, config.get("map"))
