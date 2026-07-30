@@ -3,7 +3,7 @@ import { Panel } from "../components/Panel";
 import { api } from "../lib/api";
 import type { MissionStore } from "../lib/store";
 import { IN_FLIGHT } from "../lib/flightmeta";
-import { RFD_FIELDS, validateRfd, type RfdFieldSpec } from "../lib/rfd";
+import { RFD_FIELDS, dbmToWatts, formatWatts, validateRfd, type RfdFieldSpec } from "../lib/rfd";
 
 // Confirmed on/off pill driven by telemetry (srad.camera). `null` = no telemetry
 // yet, so we can't confirm the onboard state.
@@ -111,6 +111,13 @@ function RfdField({ spec, value, error, disabled, current, onChange }: {
   // Selects have no placeholder, so the "leave alone" option carries the
   // current value the way the number inputs' placeholder does.
   const unchanged = current !== undefined ? `— unchanged (now ${current}) —` : "— unchanged —";
+  // Live unit conversion beside the input: dBm is what gets written, watts is
+  // how the radio is actually spec'd.
+  const entered = Number(value);
+  const converted =
+    spec.kind === "range" && spec.display === "watts" && value.trim() !== "" && Number.isFinite(entered)
+      ? `= ${formatWatts(dbmToWatts(entered))}`
+      : null;
 
   return (
     <label>
@@ -130,17 +137,20 @@ function RfdField({ spec, value, error, disabled, current, onChange }: {
           ))}
         </select>
       ) : (
-        <input
-          type="number"
-          className={error ? "invalid" : ""}
-          min={spec.min}
-          max={spec.max}
-          step={1}
-          placeholder={current !== undefined ? `now ${current}` : "unchanged"}
-          disabled={disabled}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-        />
+        <span className="rfd-input-row">
+          <input
+            type="number"
+            className={error ? "invalid" : ""}
+            min={spec.min}
+            max={spec.max}
+            step={1}
+            placeholder={current !== undefined ? `now ${current}` : "unchanged"}
+            disabled={disabled}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+          />
+          {converted && <span className="rfd-conv">{converted}</span>}
+        </span>
       )}
       {error
         ? <span className="rfd-err">{error}</span>

@@ -72,6 +72,12 @@
 .rfd-form { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
 .rfd-form label { display: flex; flex-direction: column; gap: 2px; font-size: 10px;
   text-transform: uppercase; color: var(--text-dim); }
+/* Input plus an optional unit conversion beside it (TX power is typed in watts,
+   the register takes dBm). */
+.rfd-input-row { display: flex; align-items: center; gap: 6px; }
+.rfd-input-row input { flex: 1; min-width: 0; }
+.rfd-conv { font-family: var(--mono); font-size: 10px; text-transform: none;
+  color: var(--text-dim); white-space: nowrap; }
 /* Accepted-range hint under each S-register field; swapped for .rfd-err when
    the entered value is rejected. */
 .rfd-hint { font-family: var(--mono); font-size: 9px; text-transform: none;

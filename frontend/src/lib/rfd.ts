@@ -6,6 +6,18 @@
 // no-ops instead of erroring. Mirrored server-side in `src/constants.py`
 // (RFD_FIELDS); keep the two in sync.
 
+// S4 is entered and stored in whole dBm, but this radio is spec'd and talked
+// about in watts ("the 1 W radio"), so the equivalent power is shown alongside.
+export const dbmToWatts = (dbm: number): number => 10 ** (dbm / 10) / 1000;
+
+/**
+ * Watt reading for a dBm register. Fixed to 3 decimals: the whole usable range
+ * is 0.001–1 W, so trimming would collapse most of it ("0.01" vs "0.010").
+ */
+export function formatWatts(watts: number): string {
+  return `${watts.toFixed(3)} W`;
+}
+
 export type RfdFieldSpec = {
   key: string;
   label: string;
@@ -14,7 +26,9 @@ export type RfdFieldSpec = {
   hint?: string;
 } & (
   | { kind: "enum"; values: number[] }
-  | { kind: "range"; min: number; max: number }
+  // `display: "watts"` shows the entered dBm converted to watts beside the
+  // input. Entry, min/max and the value sent all stay in dBm.
+  | { kind: "range"; min: number; max: number; display?: "watts" }
 );
 
 export const RFD_FIELDS: RfdFieldSpec[] = [
@@ -35,8 +49,8 @@ export const RFD_FIELDS: RfdFieldSpec[] = [
   },
   {
     key: "tx_power_dbm", label: "TX power", reg: "S4", unit: "dBm",
-    kind: "range", min: 0, max: 30,
-    hint: "30 dBm = 1 W",
+    kind: "range", min: 0, max: 30, display: "watts",
+    hint: "0–30 dBm (0.001–1 W)",
   },
   {
     // "One-byte form": the value is the rate in kbps, i.e. 64 -> 64000 bps.

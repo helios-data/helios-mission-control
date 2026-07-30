@@ -10,6 +10,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { AudioToggle } from "../components/AudioToggle";
 import { useAudioCallouts, useAudioEnabled } from "../lib/audio";
 import { api } from "../lib/api";
+import { dbmToWatts, formatWatts } from "../lib/rfd";
 import { clock, feet, fmt, fmtInt, fmtLatLon, haversine, M_TO_FT } from "../lib/units";
 import { SradPanel, CotsPanel } from "./PacketPanel";
 import { CommandConsole } from "./CommandConsole";
@@ -324,7 +325,11 @@ function ConfigPanel() {
         <span className="k">RFD net/freq</span>
         <span className="v">{String(rfd.net_id ?? "—")} / {String(rfd.min_freq_khz ?? "—")}–{String(rfd.max_freq_khz ?? "—")}</span>
         <span className="k">RFD tx/air</span>
-        <span className="v">{String(rfd.tx_power_dbm ?? "—")}dBm / {String(rfd.air_speed_kbps ?? "—")}kbps</span>
+        <span className="v">
+          {rfd.tx_power_dbm != null
+            ? `${rfd.tx_power_dbm}dBm (${formatWatts(dbmToWatts(rfd.tx_power_dbm))})`
+            : "—"} / {String(rfd.air_speed_kbps ?? "—")}kbps
+        </span>
         <span className="k">RFD channels</span>
         <span className="v">{String(rfd.num_channels ?? "—")}</span>
       </div>
