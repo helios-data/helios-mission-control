@@ -48,6 +48,11 @@ export class MissionStore {
   // The confirmed state reported by the FC is on srad.camera.
   cameraState = { power: false, recording: false };
   connected = false;
+  // Client-side receipt time of the last SRAD frame (epoch ms), null if none yet.
+  // Deliberately not link.srad.age_s: that is computed server-side and freezes at
+  // its last value if the socket itself drops, which is the case the RFD
+  // watchdog most needs to catch.
+  lastSradAt: number | null = null;
 
   // ring buffers for heavy views
   alt: AltSeries = { x: [], baroAvg: [], kf: [], cots: [] };
@@ -173,6 +178,7 @@ export class MissionStore {
 
   private ingestSrad(f: SradFrame) {
     this.srad = f;
+    this.lastSradAt = Date.now();
     this._pushSradSeries(f);
   }
 

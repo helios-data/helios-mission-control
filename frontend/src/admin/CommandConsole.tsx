@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Panel } from "../components/Panel";
 import { api } from "../lib/api";
 import type { MissionStore } from "../lib/store";
@@ -149,18 +149,41 @@ function RfdField({ spec, value, error, disabled, current, onChange }: {
   );
 }
 
+// A write reconfigures the ground modem AND is uplinked to the rocket, so bad
+// settings show up as the telemetry stream simply stopping. If nothing has
+// arrived this long after a write, surface the escape hatch.
+const RFD_WATCHDOG_MS = 3000;
+
 export function CommandConsole({ store }: { store: MissionStore }) {
   const [operator, setOperator] = useState("operator");
   // Raw text per field so "" stays "unchanged" instead of collapsing to 0.
   const [rfd, setRfd] = useState<Record<string, string>>({});
   const [armed, setArmed] = useState(false);
   const [override, setOverride] = useState(false);
+  // When the last rfd_config write went out, and the modem's registers as they
+  // were just before it — kept so "revert to old settings" has something to send
+  // once it's wired up.
+  const [sentAt, setSentAt] = useState<number | null>(null);
+  const [previous, setPrevious] = useState<Record<string, number | null> | null>(null);
   const inFlight = IN_FLIGHT.has(store.mission?.flight_state ?? "STANDBY");
   const rfdLocked = inFlight && !override;
   // Live registers off `current_rfd_config`; mission_config.json is the
   // fallback until helios-cots-telemetry reports in.
   const configured = store.rfdConfig?.config ?? store.config.rfd900x ?? {};
   const liveConfig = store.rfdConfig !== null;
+
+  // Link frames arrive at ~4 Hz, but tick locally too so the watchdog still
+  // fires if the socket itself goes quiet.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (sentAt === null) return;
+    const id = window.setInterval(() => forceTick((t) => t + 1), 500);
+    return () => window.clearInterval(id);
+  }, [sentAt]);
+
+  const sradAgeMs = store.lastSradAt === null ? Infinity : Date.now() - store.lastSradAt;
+  const telemetryLost =
+    sentAt !== null && Date.now() - sentAt > RFD_WATCHDOG_MS && sradAgeMs > RFD_WATCHDOG_MS;
 
   // Latest rfd_config command, for the confirmed-by-modem readout.
   const lastRfdAck = store.acks.filter((a) => a.command_type === "rfd_config").at(-1) ?? null;
@@ -174,8 +197,11 @@ export function CommandConsole({ store }: { store: MissionStore }) {
   };
 
   const submitRfd = async () => {
+    const before = store.rfdConfig?.config ?? null;
     try {
       await api.command("rfd_config", check.payload, operator, override);
+      setPrevious(before);
+      setSentAt(Date.now());
       setArmed(false);
       setRfd({});
     } catch (e) {
@@ -261,6 +287,26 @@ export function CommandConsole({ store }: { store: MissionStore }) {
               ) : (
                 <span className="faint">awaiting ground modem confirmation for #{lastRfdAck.command_id}…</span>
               )}
+            </div>
+          )}
+
+          {telemetryLost && (
+            <div className="errbox">
+              <div>
+                No telemetry for {Number.isFinite(sradAgeMs) ? `${(sradAgeMs / 1000).toFixed(0)}s` : "the whole session"}
+                {" "}since the last write — the new settings may have broken the link.
+              </div>
+              <div className="row-actions">
+                {/* Placeholder: the pre-write registers are captured in `previous`,
+                    but nothing is sent yet. */}
+                <button
+                  className="danger"
+                  title="Not wired up yet"
+                  onClick={() => { void previous; }}
+                >
+                  Revert to old settings
+                </button>
+              </div>
             </div>
           )}
         </div>
