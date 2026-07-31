@@ -7,7 +7,6 @@
   "gyro_units": "deg",
   "ground_station": {
     "label": "Ground Station",
-    "auto_locate": true,
     "lat": 32.9903,
     "lon": -106.9749,
     "alt_m": 1401
@@ -29,5 +28,5 @@
       "max_zoom": 14
     }
   },
-  "notes": "ground_station lat/lon are FALLBACK Spaceport America placeholders, used only when the node has no internet at boot: with internet it geolocates itself and overrides them in memory (auto_locate:false disables that, an /admin edit outranks it). Still worth setting to the actual pad, since IP geolocation is city-level at best. callsign mirrors TeleGPS direwolf.conf MYCALL."
+  "notes": "ground_station lat/lon are Spaceport America placeholders; set to the actual pad before launch. callsign mirrors TeleGPS direwolf.conf MYCALL."
 }

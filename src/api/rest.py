@@ -51,9 +51,6 @@ class ConfigPatch(BaseModel):
     rocket_name: str | None = None
     expected_apogee_m: float | None = None
     ui: dict[str, Any] | None = None
-    # `ground_station` lat/lon in the file are only a fallback — the node
-    # geolocates itself at boot when it has internet (src/geolocate.py). Editing
-    # them here is the explicit override that outranks that and gets persisted.
     ground_station: dict[str, Any] | None = None
     # No `rfd900x`: the ground modem owns its own registers. They are read from
     # the `current_rfd_config` event and written with an `rfd_config` command,
@@ -64,15 +61,6 @@ class ConfigPatch(BaseModel):
 async def patch_config(req: Request, patch: ConfigPatch) -> dict[str, Any]:
     state = _mission(req)
     data = patch.model_dump(exclude_none=True)
-    gs_patch = data.get("ground_station")
-    if isinstance(gs_patch, dict) and ("lat" in gs_patch or "lon" in gs_patch):
-        # A hand-entered position beats whatever geolocate.py found, for the rest
-        # of this run and on disk. Drop the stale auto-location provenance with it.
-        gs_patch["source"] = "manual"
-        current_gs = state.config.get("ground_station")
-        if isinstance(current_gs, dict):
-            for key in ("located_via", "located_place", "located_at"):
-                current_gs.pop(key, None)
     for k, v in data.items():
         if isinstance(v, dict) and isinstance(state.config.get(k), dict):
             state.config[k].update(v)

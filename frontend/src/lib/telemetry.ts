@@ -179,20 +179,7 @@ export interface MissionConfig {
   callsign?: string;
   expected_apogee_m?: number;
   gyro_units?: "deg" | "rad"; // units of TelemetryPacket gyro_x/y/z (assumed deg/s)
-  // lat/lon/alt_m in the config file are a *fallback*. When the node has
-  // internet at boot the backend geolocates itself and overrides them in memory
-  // (src/geolocate.py), pushing a `config` frame; `source` says which won.
-  ground_station?: {
-    label?: string;
-    lat: number;
-    lon: number;
-    alt_m: number;
-    auto_locate?: boolean;              // false pins the config coordinates
-    source?: "config" | "auto" | "manual";
-    located_via?: string;               // provider host, when source === "auto"
-    located_place?: string | null;      // "Vancouver, British Columbia, CA"
-    located_at?: number;                // epoch seconds
-  };
+  ground_station?: { label?: string; lat: number; lon: number; alt_m: number };
   // No rfd900x here: the ground modem's registers come from the modem itself,
   // on `current_rfd_config` (see RfdConfigFrame), not from the config file.
   ui?: {
