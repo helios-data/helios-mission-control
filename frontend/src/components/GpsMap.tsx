@@ -108,13 +108,21 @@ export function GpsMap({
 
   useEffect(() => {
     if (!ref.current) return;
-    const gs = store.config.ground_station;
-    const center: [number, number] = gs ? [gs.lon, gs.lat] : [-106.9749, 32.9903];
+    // The pad is read live, not captured at mount. `store.config` is still empty
+    // when this effect runs (the WS snapshot lands a moment later), and an admin
+    // edit to `ground_station` broadcasts a fresh `config` frame at any time —
+    // so a marker planted from a mount-time value would sit at the wrong place
+    // for the life of the map. Until the pad is known, open zoomed out rather
+    // than guessing a location and fetching a region's worth of wrong tiles.
+    const pad = (): [number, number] | null => {
+      const gs = store.config.ground_station;
+      return gs ? [gs.lon, gs.lat] : null;
+    };
     const map = new maplibregl.Map({
       container: ref.current,
       style: mapStyle(theme),
-      center,
-      zoom: 12,
+      center: pad() ?? [0, 0],
+      zoom: pad() ? 12 : 1,
       attributionControl: false,
     });
     mapRef.current = map;
@@ -124,7 +132,7 @@ export function GpsMap({
       map.addSource("cots-track", { type: "geojson", data: EMPTY });
       map.addSource("srad-pos", { type: "geojson", data: point(null) });
       map.addSource("cots-pos", { type: "geojson", data: point(null) });
-      map.addSource("ground", { type: "geojson", data: point(center) });
+      map.addSource("ground", { type: "geojson", data: point(pad()) });
       // Landing-prediction sources (empty until a prediction arrives / is shown).
       map.addSource("pred-e90", { type: "geojson", data: EMPTY });
       map.addSource("pred-e50", { type: "geojson", data: EMPTY });
@@ -159,6 +167,10 @@ export function GpsMap({
 
       const timer = window.setInterval(() => {
         const st = store.sradTrack, ct = store.cotsTrack;
+        // Keep the pad marker on the live config, so it appears once the
+        // snapshot arrives and follows any later edit.
+        const ground = pad();
+        (map.getSource("ground") as maplibregl.GeoJSONSource)?.setData(point(ground));
         (map.getSource("srad-track") as maplibregl.GeoJSONSource)?.setData(
           { type: "FeatureCollection", features: [line(st)] } as GeoJSON.FeatureCollection);
         (map.getSource("cots-track") as maplibregl.GeoJSONSource)?.setData(
@@ -187,7 +199,10 @@ export function GpsMap({
           framePts.push([lp.best_estimate.lon, lp.best_estimate.lat]);
           for (const p of lp.ellipse_90) framePts.push([p.lon, p.lat]);
         }
-        if (framePts.length === 0) framePts.push(center);
+        if (framePts.length === 0 && ground) framePts.push(ground);
+        // Nothing known to frame yet (no fix, no pad) — stay put and retry next
+        // tick rather than fitting to an arbitrary point.
+        if (framePts.length === 0) return;
 
         const auto = autoFitRef.current;
         const turnedOn = auto && !wasAutoFit.current;
