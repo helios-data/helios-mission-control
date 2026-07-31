@@ -7,8 +7,8 @@
   "gyro_units": "deg",
   "ground_station": {
     "label": "Ground Station",
-    "lat": 32.9903,
-    "lon": -106.9749,
+    "lat": 49.2676634,
+    "lon": -123.2550483,
     "alt_m": 1401
   },
   "ui": {
