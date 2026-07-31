@@ -7,6 +7,8 @@ Env:  STANDALONE=1 (internal fake data), VERBOSE=1 (debug logging).
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import copy
 import json
 import logging
 import os
@@ -18,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import sponsors
+from . import geolocate, sponsors
 from .api import rest, ws
 from .commands import CommandManager
 from .hub import ConnectionHub
@@ -128,11 +130,31 @@ def resolve_config() -> tuple[dict[str, Any], Path | None, str]:
     return config, save_path, writeback
 
 
-def make_saver(save_path: Path | None, writeback: str):
+def _persistable(cfg: dict[str, Any], fallback_gs: dict[str, Any]) -> dict[str, Any]:
+    """Put the fallback ground-station block back before writing to disk.
+
+    The file's coordinates are only a fallback (see :mod:`src.geolocate`): if this
+    boot geolocated the node, an admin edit to some unrelated field must not
+    quietly bake today's IP-derived position into the config. Only an explicit
+    coordinate edit — which marks the block ``source: "manual"`` — persists.
+    """
+    gs = cfg.get("ground_station")
+    if not isinstance(gs, dict) or gs.get("source") != "auto":
+        return cfg
+    cfg = dict(cfg)
+    if fallback_gs:
+        cfg["ground_station"] = dict(fallback_gs)
+    else:
+        cfg.pop("ground_station", None)
+    return cfg
+
+
+def make_saver(save_path: Path | None, writeback: str, fallback_gs: dict[str, Any] | None = None):
     def save_config(cfg: dict[str, Any]) -> None:
         if writeback == "readonly" or save_path is None:
             log.info("config is launcher-provided (read-only); edit not persisted to disk")
             return
+        cfg = _persistable(cfg, fallback_gs or {})
         save_path.parent.mkdir(parents=True, exist_ok=True)
         if writeback == "preserve" and save_path.exists():
             # Overlay our config onto the on-disk file so launcher keys (`nodes`,
@@ -187,20 +209,28 @@ async def lifespan(app: FastAPI):
     app.state.logger = logger
     app.state.commands = commands
     app.state.tiles = tiles
-    app.state.save_config = make_saver(config_save_path, config_writeback)
+    # The config's ground-station coordinates are only a fallback, so the saver
+    # needs the original to restore before writing (see _persistable).
+    fallback_gs = copy.deepcopy(config.get("ground_station") or {})
+    app.state.save_config = make_saver(config_save_path, config_writeback, fallback_gs)
 
-    # Best-effort map-tile prewarm around the ground station (offline after this).
-    gs = config.get("ground_station")
-    prewarm_task = None
-    if gs and gs.get("lat") is not None and gs.get("lon") is not None:
-        prewarm_task = asyncio.create_task(tiles.prewarm(gs["lat"], gs["lon"]), name="tile-prewarm")
+    # Ask the internet where this node actually is, overriding those fallback
+    # coordinates in memory. Backgrounded so a dead network never delays boot;
+    # the tile prewarm and the STANDALONE flight both wait on it so they use the
+    # same pad the map ends up marking.
+    locate_task = asyncio.create_task(_resolve_location(state, hub), name="geolocate")
+    prewarm_task = asyncio.create_task(
+        _prewarm_when_located(tiles, state, locate_task), name="tile-prewarm"
+    )
 
     if standalone:
         from .standalone import run_standalone
 
         # run_standalone wires commands.publish_fn to reflect camera commands back
         # into the synthetic flight so telemetry confirms them (no CommandAck).
-        task = asyncio.create_task(run_standalone(state, hub, commands), name="standalone")
+        task = asyncio.create_task(
+            run_standalone(state, hub, commands, locate_task), name="standalone"
+        )
         log.info("running in STANDALONE mode")
     else:
         from .helios_bridge import HeliosBridge
@@ -214,12 +244,57 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         task.cancel()
-        if prewarm_task is not None:
-            prewarm_task.cancel()
+        locate_task.cancel()
+        prewarm_task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
+
+
+async def _resolve_location(state: MissionState, hub: ConnectionHub) -> None:
+    """Swap the fallback ground-station coordinates for this node's real ones.
+
+    Best-effort and non-fatal: offline, disabled, or already set by hand, the
+    configured values simply stand. See :mod:`src.geolocate` for the accuracy
+    caveats that make the provenance fields worth broadcasting.
+    """
+    gs = state.config.setdefault("ground_station", {})
+    gs.setdefault("source", "config")
+    if not gs.get("auto_locate", True):
+        log.info("ground-station auto-location disabled; using configured coordinates")
+        return
+
+    fix = await geolocate.locate()
+    if fix is None:
+        log.info("no internet geolocation; using configured ground station (%s, %s)",
+                 gs.get("lat"), gs.get("lon"))
+        return
+    if gs.get("source") == "manual":
+        # An operator set the coordinates from /admin while we were looking them
+        # up. Explicit beats automatic, always.
+        log.info("discarding auto-location: ground station was set manually")
+        return
+
+    geolocate.apply_fix(gs, fix)
+    log.info("ground station auto-located to %.5f, %.5f (%s via %s), elevation %s m",
+             gs["lat"], gs["lon"], fix.place or "unknown place", fix.provider, gs.get("alt_m"))
+    await hub.broadcast({"type": "config", **state.config})
+
+
+async def _prewarm_when_located(
+    tiles: TileCache, state: MissionState, locate_task: asyncio.Task[None]
+) -> None:
+    """Pre-warm offline map tiles once the pad location has settled.
+
+    Waiting on the lookup matters: prewarming the fallback coordinates first
+    would spend the one shot at connectivity caching tiles for a site we aren't at.
+    """
+    with contextlib.suppress(Exception):
+        await locate_task
+    gs = state.config.get("ground_station") or {}
+    if gs.get("lat") is not None and gs.get("lon") is not None:
+        await tiles.prewarm(gs["lat"], gs["lon"])
 
 
 def _attach_bridge_publisher(bridge, commands: CommandManager) -> None:

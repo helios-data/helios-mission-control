@@ -5,6 +5,7 @@ import { AltitudeChart } from "../components/AltitudeChart";
 import { GpsMap } from "../components/GpsMap";
 import { getStore, useStore, hasGpsFix } from "../lib/store";
 import { sourceState, type DataState } from "../lib/fallback";
+import type { MissionConfig } from "../lib/telemetry";
 import { useTheme } from "../lib/theme";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { AudioToggle } from "../components/AudioToggle";
@@ -304,12 +305,33 @@ function LinkStat({ label, value, color }: { label: string; value: string; color
   );
 }
 
+// Where the pad coordinates came from: AUTO (this node geolocated itself over
+// the internet at boot), MANUAL (entered here, outranks auto), or CONFIG (the
+// mission_config.json fallback, i.e. no internet or auto_locate disabled).
+const GS_SOURCE: Record<string, { label: string; color: string }> = {
+  auto: { label: "AUTO", color: "var(--accent-cyan)" },
+  manual: { label: "MANUAL", color: "var(--ok)" },
+  config: { label: "CONFIG", color: "var(--text-dim)" },
+};
+
+function GroundStationSource({ gs }: { gs: NonNullable<MissionConfig["ground_station"]> }) {
+  const s = GS_SOURCE[gs.source ?? "config"] ?? GS_SOURCE.config;
+  const via = [gs.located_place, gs.located_via].filter(Boolean).join(" · ");
+  return (
+    <span className="mono faint" style={{ fontSize: 10, marginLeft: 6, color: s.color }}
+      title={via ? `Located via ${via}` : undefined}>
+      {s.label}
+    </span>
+  );
+}
+
 function ConfigPanel() {
   const cfg = store.config;
   // Ground-modem registers as reported by helios-cots-telemetry
   // (current_rfd_config). Empty until that node reports in, so the rows below
   // read "—" rather than showing a stale config-file copy.
   const rfd = store.rfdConfig?.config ?? {};
+  const gs = cfg.ground_station;
   return (
     <Panel title="Configuration">
       <div className="kv">
@@ -321,7 +343,15 @@ function ConfigPanel() {
         <span className="k">expected apogee</span><span className="v">{fmt(cfg.expected_apogee_m ?? 0, 0)} m</span>
         <span className="k">refresh</span><span className="v">{cfg.ui?.refresh_hz ?? "—"} Hz</span>
         <span className="k">video src</span><span className="v">{cfg.ui?.video_source ?? "—"}</span>
-        <span className="k">ground alt</span><span className="v">{fmt(cfg.ground_station?.alt_m ?? 0, 0)} m</span>
+        {/* Pad position: the config file's coordinates are only a fallback, so
+            show which source actually won and where an "auto" fix came from —
+            IP geolocation is city-level and can land on a distant carrier POP. */}
+        <span className="k">pad</span>
+        <span className="v">
+          {gs ? `${fmtLatLon(gs.lat)}, ${fmtLatLon(gs.lon)}` : "—"}
+          {gs?.source && <GroundStationSource gs={gs} />}
+        </span>
+        <span className="k">ground alt</span><span className="v">{fmt(gs?.alt_m ?? 0, 0)} m</span>
         <span className="k">RFD net/freq</span>
         <span className="v">{String(rfd.net_id ?? "—")} / {String(rfd.min_freq_khz ?? "—")}–{String(rfd.max_freq_khz ?? "—")}</span>
         <span className="k">RFD tx/air</span>

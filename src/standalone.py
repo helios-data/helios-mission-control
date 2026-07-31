@@ -8,6 +8,7 @@ developed against.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import Any
@@ -92,11 +93,21 @@ def _attach_publisher(
 
 
 async def run_standalone(
-    state: MissionState, hub: ConnectionHub, commands: CommandManager | None = None
+    state: MissionState,
+    hub: ConnectionHub,
+    commands: CommandManager | None = None,
+    located: asyncio.Task[None] | None = None,
 ) -> None:
     ui = state.config.get("ui", {})
     hz = float(ui.get("refresh_hz", 20)) or 20.0
     dt = 1.0 / hz
+    # The synthetic rocket has to lift off from the same pad the map marks, so
+    # let the (time-bounded) ground-station geolocation settle before sampling
+    # coordinates — otherwise the flight starts at the config fallback while the
+    # pad marker jumps to wherever this node really is.
+    if located is not None:
+        with contextlib.suppress(Exception):
+            await located
     gs = state.config.get("ground_station", {})
     flight = SyntheticFlight(
         ground_alt_m=gs.get("alt_m", 1401.0),

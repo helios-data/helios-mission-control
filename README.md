@@ -85,6 +85,23 @@ Editable subset is exposed on the admin console; changes are persisted and
 broadcast. (`ui.video_source` is **not** a config knob — the backend derives it
 from the run mode; see [Video](#video-overlay).)
 
+**Ground-station coordinates are a fallback.** `ground_station.lat`/`lon`/`alt_m`
+drive the pad marker, the downrange/bearing readouts, the COTS AGL baseline and
+the offline tile pre-warm — and they go stale the moment the box is set up
+somewhere other than the site in the file. So at boot, if the node has internet,
+it geolocates **itself** (IP geolocation + a keyless elevation lookup, see
+[`src/geolocate.py`](src/geolocate.py)) and overrides them **in memory**; with no
+internet the configured values stand. The admin Configuration panel tags the pad
+row `AUTO` / `MANUAL` / `CONFIG` so the source is never a guess.
+
+Two caveats worth knowing: IP geolocation is **city-level at best**, and on
+satellite or cellular links it can report the carrier's egress POP hundreds of km
+away — so keep the file's coordinates realistic, and check the tag before launch.
+An explicit `PATCH /api/config` of `ground_station.lat`/`lon` marks the block
+`manual`, outranks auto-location for the rest of the run, and is the *only*
+version written back to disk (an auto fix never rewrites your fallback). Set
+`ground_station.auto_locate: false` to pin the configured coordinates outright.
+
 **Launcher override (Open Question 3).** helios-launcher can supply the
 per-rocket parameters instead, by **linking a file** into the container (declared
 in [`config.json`](config.json) exactly like a volume, at
