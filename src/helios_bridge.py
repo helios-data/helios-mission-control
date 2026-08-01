@@ -16,6 +16,7 @@ from .state import MissionState
 from .telemetry import (
     MIN_PACKET_BYTES,
     normalize_cots,
+    normalize_ground,
     normalize_landing,
     normalize_rfd_config,
     normalize_srad,
@@ -30,6 +31,11 @@ COTS_EVENT = "aprs"
 # Landing predictor (separate Helios node; optional — may not be running).
 LANDING_ADDRESS = "Helios.Services.LandingPredictor"
 LANDING_EVENT = "landing_prediction"
+# Ground-station GNSS receiver (separate Helios node; optional). Publishes an
+# NmeaSentence per decoded sentence, so this streams continuously and the ground
+# station's position tracks it live. Without it, the configured coordinates stand.
+GROUND_ADDRESS = "Helios.Services.GroundGPS"
+GROUND_EVENT = "ground_position"
 # Ground modem's current S-registers, published by helios-cots-telemetry (which
 # owns the RFD serial port): once at startup, then again after each write it
 # applies. Same address we publish `command` on, since it's the same node.
@@ -40,6 +46,9 @@ NODE_URI = "Helios.Services.Mission_Control"
 # Retry cadence for the (optional) landing-prediction subscription, kept isolated
 # so a missing/idle predictor never tears down the SRAD/COTS subscriptions.
 LANDING_RETRY_S = 5.0
+# Same isolation for GroundGPS: a receiver that isn't deployed yet must never
+# tear down the telemetry subscriptions.
+GROUND_RETRY_S = 5.0
 
 # The one-shot seed of `current_rfd_config` races helios-cots-telemetry's startup
 # — that node may not have registered its address or published yet when we
@@ -57,14 +66,15 @@ SEED_TIMEOUT_S = 2.0
 
 
 def _load_proto_classes() -> tuple[Any, Any]:
-    """Import the generated betterproto packet classes (raises if missing)."""
-    from src.generated import TelemetryPacket  # noqa: PLC0415 - lazy by design
+    """Import the generated betterproto packet classes (raises if missing).
 
-    try:
-        from src.generated import AprsPacket  # type: ignore  # noqa: PLC0415
-    except ImportError:
-        # SDK ships a generated AprsPacket; prefer it (as helios-dashboard does).
-        from helios.generated.helios.transport import AprsPacket  # type: ignore  # noqa: PLC0415
+    ``AprsPacket`` now comes from the **helios-protos submodule** compiled by
+    ``make protos`` (``helios.transport`` package), not from the SDK's own
+    generated copy — one checked-in schema for both APRS and NMEA.
+    """
+    from src.generated import TelemetryPacket  # noqa: PLC0415 - lazy by design
+    from src.generated.helios.transport import AprsPacket  # noqa: PLC0415
+
     return TelemetryPacket, AprsPacket
 
 
@@ -104,6 +114,7 @@ class HeliosBridge:
                     self._subscribe_srad(),
                     self._subscribe_cots(),
                     self._subscribe_landing(),
+                    self._subscribe_ground(),
                     self._seed_rfd_config(),
                     self._subscribe_rfd_config(),
                     self._housekeeping(),
@@ -212,6 +223,54 @@ class HeliosBridge:
         try:
             return normalize_landing(cls.parse(data))
         except Exception:  # noqa: BLE001 - a bad prediction frame must not drop the stream
+            return None
+
+    # ---- ground-station GNSS (ground_position) ---------------------------
+    async def _subscribe_ground(self) -> None:
+        """Subscribe to the GroundGPS node, isolated + self-retrying.
+
+        Optional, exactly like the predictor: the event may not exist yet (node
+        not deployed), in which case we simply keep retrying and the configured
+        ground-station coordinates remain in force. Every decoded sentence is
+        ingested — including no-fix ones — so the admin panel can distinguish
+        "receiver alive, not locked" from "node not running".
+        """
+        try:
+            from src.generated.helios.transport import (
+                NmeaSentence,  # noqa: PLC0415 - lazy by design
+            )
+        except ImportError:
+            log.warning(
+                "NmeaSentence proto not compiled; live ground-station position disabled "
+                "until `make protos` (helios-protos/transport/nmea.proto). "
+                "Falling back to the configured ground_station coordinates."
+            )
+            return
+        while True:
+            try:
+                async with self.client.subscribe_event(
+                    address=GROUND_ADDRESS, event_name=GROUND_EVENT
+                ) as events:
+                    async for event in events:
+                        frame = self._parse_ground(NmeaSentence, event.data)
+                        if frame is not None:
+                            await self.hub.broadcast(self.state.ingest_ground(frame))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - optional node; retry, don't tear down telemetry
+                log.warning(
+                    "%s subscription error (%s); retrying in %.0fs",
+                    GROUND_EVENT, exc, GROUND_RETRY_S,
+                )
+                await asyncio.sleep(GROUND_RETRY_S)
+
+    def _parse_ground(self, cls: Any, data: bytes) -> dict[str, Any] | None:
+        if not data:
+            return None
+        try:
+            return normalize_ground(cls.parse(data))
+        except Exception:  # noqa: BLE001 - a bad sentence must not drop the stream
+            self.state.ground_link.mark_error()
             return None
 
     # ---- ground modem config (current_rfd_config) ------------------------

@@ -15,7 +15,14 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from .constants import FT_TO_M, KNOTS_TO_MS, RFD_CONFIG_FIELDS, flight_state_name
+from .constants import (
+    FT_TO_M,
+    KNOTS_TO_MS,
+    NMEA_FIX_INVALID,
+    RFD_CONFIG_FIELDS,
+    flight_state_name,
+    nmea_fix_name,
+)
 
 MIN_PACKET_BYTES = 15  # skip runts (§1.2 robustness pattern)
 
@@ -153,6 +160,65 @@ def normalize_rfd_config(msg: object) -> dict[str, Any]:
     return {
         "type": "rfd_config",
         "config": {k: _int(msg, k) for k in RFD_CONFIG_FIELDS},
+        "received_at": time.time(),
+    }
+
+
+def normalize_ground(pkt: object) -> dict[str, Any]:
+    """betterproto NmeaSentence -> normalized ground_position frame.
+
+    Published by ``Helios.Services.GroundGPS`` on the ``ground_position`` event,
+    carrying whatever the ground receiver's GNSS is reporting right now. This is
+    the live position of the ground station, and it supersedes the configured
+    ``ground_station`` coordinates whenever it carries a usable fix.
+
+    ``position`` is set **only** when the sentence actually locates us — the
+    payload is a NmeaPosition (not a bare ``raw_sentence``), the fix quality is
+    not INVALID, and the coordinates aren't the 0/0 unset default. Anything else
+    leaves it ``None``, which is the signal for consumers to fall back to the
+    configured coordinates. ``fix_quality``/``fix_quality_name`` are always
+    reported so the UI can say *why* there's no fix rather than just going blank.
+
+    Mirrors GroundFrame in frontend/src/lib/telemetry.ts.
+    """
+    pos = _get(pkt, "position")
+    fix_raw = _get(pos, "fix_quality") if pos is not None else None
+    fix_q = 0
+    try:
+        fix_q = int(getattr(fix_raw, "value", fix_raw) or 0)
+    except (TypeError, ValueError):
+        fix_q = 0
+
+    position: dict[str, Any] | None = None
+    if pos is not None and fix_q != NMEA_FIX_INVALID:
+        lat = _num(pos, "latitude", "lat")
+        lon = _num(pos, "longitude", "lon")
+        # 0/0 is the unset default, not a coordinate — same rule as the SRAD GPS
+        # and the landing predictor use.
+        if lat is not None and lon is not None and not (lat == 0.0 and lon == 0.0):
+            spd_kt = _num(pos, "speed_knots", "speed")
+            position = {
+                "lat": lat,
+                "lon": lon,
+                "alt_m": _num(pos, "altitude_m", "altitude"),
+                "geoid_separation_m": _num(pos, "geoid_separation_m"),
+                "course": _num(pos, "course_deg", "course"),
+                "speed_knots": spd_kt,
+                "speed_ms": round(spd_kt * KNOTS_TO_MS, 2) if spd_kt is not None else None,
+                "sats": _int(pos, "satellites_used", "sats"),
+                "hdop": _num(pos, "hdop"),
+            }
+
+    return {
+        "type": "ground",
+        "talker_id": _get(pkt, "talker_id"),
+        "sentence_type": _get(pkt, "sentence_type"),
+        "checksum_valid": bool(_get(pkt, "checksum_valid")),
+        "timestamp": _get(pkt, "timestamp"),
+        "fix_quality": fix_q,
+        "fix_quality_name": nmea_fix_name(fix_q),
+        "position": position,
+        "raw_sentence": _get(pkt, "raw_sentence"),
         "received_at": time.time(),
     }
 

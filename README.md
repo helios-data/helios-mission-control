@@ -19,6 +19,12 @@ Two telemetry streams are consumed (§1.2 of the build plan):
 |---|---|---|---|
 | SRAD | `Helios.FALCON.SRAD_Telemetry` | `telemetry` | `TelemetryPacket` (falcon-protos) |
 | COTS | `Helios.FALCON.APRS_Telemetry` | `aprs` | `AprsPacket` (helios-protos) |
+| Ground GNSS | `Helios.Services.GroundGPS` | `ground_position` | `NmeaSentence` (helios-protos) |
+| Landing | `Helios.Services.LandingPredictor` | `landing_prediction` | `LandingPrediction` (protos-proposed) |
+
+The last two are **optional nodes**: each subscription is isolated and
+self-retrying, so a predictor or receiver that isn't deployed never tears down
+the telemetry streams.
 
 ## Quick start (no hardware, no submodules)
 
@@ -77,10 +83,33 @@ admin REST ──▶ CommandManager ──publish──▶ core (GroundCommand) 
 
 See [`MISSION_CONTROL_PLAN.md`](MISSION_CONTROL_PLAN.md) for the full design.
 
+## Ground-station position
+
+The ground station's position comes from the **`Helios.Services.GroundGPS` node**
+(`ground_position` → `NmeaSentence`), which publishes one frame per decoded NMEA
+sentence — so the pad marker, the downrange/bearing readouts and the COTS AGL
+baseline all track the receiver live.
+
+`ground_station` in `mission_config.json` is the **fallback**, used whenever the
+live source can't locate us:
+
+- the GroundGPS node isn't running (or hasn't published yet),
+- the sentence carries only a `raw_sentence` (no position payload),
+- the fix quality is `INVALID`, or the coordinates are the 0/0 unset default.
+
+The admin Configuration panel tags the pad row `GNSS` or `CONFIG` so the active
+source is never a guess, and pre-launch the Landing Prediction slot shows the
+receiver's own stats (fix quality, satellites, HDOP) instead of an empty
+"Awaiting prediction". Altitude falls back independently — NMEA `RMC` sentences
+carry a position but no altitude, and blanking the configured elevation would
+skew every COTS AGL readout. Nothing here contacts the internet; the only
+outbound request the backend makes is for map tiles.
+
 ## Configuration
 
 `mission_config.json` (repo root) is the **base** source of truth for callsign,
-RFD900x settings, ground-station coordinates, and UI refresh/stale timeouts.
+RFD900x settings, fallback ground-station coordinates, and UI refresh/stale
+timeouts.
 Editable subset is exposed on the admin console; changes are persisted and
 broadcast. (`ui.video_source` is **not** a config knob — the backend derives it
 from the run mode; see [Video](#video-overlay).)

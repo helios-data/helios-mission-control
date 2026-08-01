@@ -15,6 +15,7 @@
     "refresh_hz": 20,
     "srad_stale_seconds": 5,
     "cots_stale_seconds": 60,
+    "ground_stale_seconds": 15,
     "sponsor_rotate_seconds": 10,
     "video_url": "http://localhost:1984/api/webrtc?src=cloudburst"
   },
@@ -28,5 +29,5 @@
       "max_zoom": 14
     }
   },
-  "notes": "ground_station lat/lon are Spaceport America placeholders; set to the actual pad before launch. callsign mirrors TeleGPS direwolf.conf MYCALL."
+  "notes": "ground_station is the FALLBACK position, used only when Helios.Services.GroundGPS has no fix (node down, raw_sentence only, or fix_quality INVALID); with a fix the live NMEA position wins and the admin pad row reads GNSS instead of CONFIG. Keep it set to the actual pad anyway, since it is what shows before the receiver locks. NOTE: alt_m 1401 is left over from the Spaceport placeholder and does not match the current lat/lon - it is the COTS AGL baseline whenever NMEA carries no altitude (RMC sentences), so set it to the real site elevation. callsign mirrors TeleGPS direwolf.conf MYCALL."
 }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +32,14 @@ STATUS_FINAL = "final"
 # The sim only estimates a landing point once the rocket is past apogee (i.e.
 # descending). Before that there is no meaningful touchdown estimate to publish.
 _POST_APOGEE_PHASES = ("DROGUE_DESCENT", "MAIN_DESCENT", "LANDED")
+
+# Synthetic ground-station GNSS (the real source is Helios.Services.GroundGPS).
+# The receiver takes a few seconds to lock, so the demo starts on the configured
+# fallback and switches to live — and it sits a short way off the pad, since the
+# operator's table is not the launch rail.
+_GROUND_ACQUIRE_S = 3.0
+_GROUND_OFFSET_N_M = 35.0
+_GROUND_OFFSET_E_M = -20.0
 
 
 @dataclass
@@ -219,8 +228,78 @@ class SyntheticFlight:
             "status": STATUS_FINAL if landed else STATUS_PREDICTING,
         }
 
-    def aprs_frame(self, callsign: str = "N0CALL") -> dict[str, Any]:
-        """A COTS/APRS position sample offset slightly from the SRAD fix."""
+    def ground_frame(self) -> dict[str, Any]:
+        """A synthetic ground-receiver NMEA sentence (mirrors telemetry.normalize_ground).
+
+        Models a real GNSS receiver at the ground station: no fix for the first
+        few seconds while it acquires (which exercises the fall-back to the
+        configured coordinates), then a GPS fix that wanders a couple of metres
+        sample to sample. The receiver sits a short distance off the configured
+        pad — as it would in reality, being at the operator's table rather than on
+        the rail — so it is visibly the live source rather than an echo of config.
+
+        Alternates GGA and RMC: only GGA carries altitude, so the RMC samples
+        exercise the "keep the configured elevation" branch in
+        MissionState.ground_station.
+        """
+        acquiring = self.t < _GROUND_ACQUIRE_S
+        gga = int(self.t) % 2 == 0
+        if acquiring:
+            # Receiver alive but unlocked: a raw sentence with no position at all.
+            return {
+                "type": "ground", "talker_id": "GP", "sentence_type": "GSV",
+                "checksum_valid": True, "timestamp": None,
+                "fix_quality": 0, "fix_quality_name": "INVALID",
+                "position": None,
+                "raw_sentence": "$GPGSV,3,1,11,01,05,040,18,03,22,110,24,06,68,210,31*7A",
+                "received_at": time.time(),
+            }
+        m_per_deg_lat = 111320.0
+        m_per_deg_lon = 111320.0 * math.cos(math.radians(self.base_lat))
+        lat = self.base_lat + (_GROUND_OFFSET_N_M + random.gauss(0, 1.5)) / m_per_deg_lat
+        lon = self.base_lon + (_GROUND_OFFSET_E_M + random.gauss(0, 1.5)) / m_per_deg_lon
+        return {
+            "type": "ground",
+            "talker_id": "GN",
+            "sentence_type": "GGA" if gga else "RMC",
+            "checksum_valid": True,
+            "timestamp": None,
+            "fix_quality": 1,
+            "fix_quality_name": "GPS",
+            "position": {
+                "lat": round(lat, 6),
+                "lon": round(lon, 6),
+                # RMC carries no altitude — leave it None so the configured
+                # elevation is kept rather than blanked.
+                "alt_m": round(self.ground_alt_m + random.gauss(0, 0.8), 1) if gga else None,
+                "geoid_separation_m": -22.4 if gga else None,
+                "course": None,
+                "speed_knots": 0.0,
+                "speed_ms": 0.0,
+                "sats": random.randint(9, 13),
+                "hdop": round(random.uniform(0.7, 1.3), 1),
+            },
+            "raw_sentence": None,
+        }
+
+    def aprs_frame(self, callsign: str = "N0CALL", with_position: bool = True) -> dict[str, Any]:
+        """A COTS/APRS sample offset slightly from the SRAD fix.
+
+        ``with_position=False`` produces a non-position packet (status/telemetry),
+        i.e. the ``raw_info`` arm of AprsPacket's payload oneof — the shape the
+        admin panel flags as NO FIX and which must still log as a packet.
+        """
+        if not with_position:
+            return {
+                "type": "cots",
+                "source_callsign": callsign,
+                "source_ssid": 11,
+                "destination": "APRS",
+                "path": ["WIDE1-1", "WIDE2-1"],
+                "timestamp": None,
+                "position": None,
+                "raw_info": ">CloudBurst status: batt 8.02V, no GPS lock",
+            }
         alt_m = self.ground_alt_m + self.alt_agl + random.gauss(0, 5)
         lat = self.base_lat + self.alt_agl * 1.5e-6 + random.gauss(0, 2e-5)
         lon = self.base_lon + self.alt_agl * 1.0e-6 + random.gauss(0, 2e-5)

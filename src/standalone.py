@@ -116,7 +116,9 @@ async def run_standalone(
     tick = 0
     aprs_period_ticks = max(1, int(hz / 0.2))  # ~0.2 Hz APRS
     pred_period_ticks = max(1, int(hz / 1.0))   # ~1 Hz landing predictions
+    ground_period_ticks = max(1, int(hz / 1.0))  # ~1 Hz ground-station NMEA
     housekeeping_ticks = max(1, int(hz / 4))    # link/mission ~4 Hz
+    aprs_count = 0
 
     # Deadline-based pacing: sleep only for the time left until the next tick, not
     # a full `dt` after the work. Sleeping `dt` *after* ingest+broadcast makes the
@@ -130,7 +132,15 @@ async def run_standalone(
         await hub.broadcast(state.ingest_srad(frame))
 
         if tick % aprs_period_ticks == 0:
-            await hub.broadcast(state.ingest_cots(flight.aprs_frame(callsign)))
+            # Every 5th APRS packet is a non-position (status) packet, so the
+            # NO FIX indicator and the "logs as a packet anyway" path are both
+            # exercised by just running the demo.
+            aprs_count += 1
+            has_pos = aprs_count % 5 != 0
+            await hub.broadcast(state.ingest_cots(flight.aprs_frame(callsign, has_pos)))
+
+        if tick % ground_period_ticks == 0:
+            await hub.broadcast(state.ingest_ground(flight.ground_frame()))
 
         if tick % pred_period_ticks == 0:
             pred = flight.landing_prediction()

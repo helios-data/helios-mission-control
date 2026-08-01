@@ -93,6 +93,7 @@ export interface LinkFrame {
   srad: LinkSourceSnap;
   cots: LinkSourceSnap;
   landing?: LinkSourceSnap; // Helios.Services.LandingPredictor freshness (optional node)
+  ground?: LinkSourceSnap;  // Helios.Services.GroundGPS freshness (optional node)
 }
 
 // Landing prediction (Helios.Services.LandingPredictor -> `landing_prediction`).
@@ -172,6 +173,52 @@ export interface AckFrame {
   message: string;
 }
 
+// NmeaPosition.FixQuality (helios-protos). INVALID means the receiver has no
+// lock, so the sentence's coordinates are meaningless and the configured
+// ground_station stands in. Mirrors NMEA_FIX_QUALITY in src/constants.py.
+export type NmeaFixQuality =
+  | "INVALID" | "GPS" | "DGPS" | "PPS" | "RTK_FIXED" | "RTK_FLOAT"
+  | "ESTIMATED" | "MANUAL" | "SIMULATION" | "UNKNOWN";
+
+export interface GroundPosition {
+  lat: number;
+  lon: number;
+  alt_m: number | null;          // GGA only — RMC carries no altitude
+  geoid_separation_m: number | null;
+  course: number | null;
+  speed_knots: number | null;
+  speed_ms: number | null;
+  sats: number | null;
+  hdop: number | null;
+}
+
+// `ground_position` from Helios.Services.GroundGPS — one per decoded NMEA
+// sentence, so this streams continuously and the ground station moves with it.
+// `position` is null when the sentence carries no usable fix (raw_sentence only,
+// INVALID fix quality, or 0/0); consumers then fall back to config.ground_station.
+export interface GroundFrame {
+  type: "ground";
+  talker_id: string | null;
+  sentence_type: string | null;  // GGA / RMC / VTG / ...
+  checksum_valid: boolean;
+  timestamp: unknown;
+  fix_quality: number;
+  fix_quality_name: NmeaFixQuality;
+  position: GroundPosition | null;
+  raw_sentence: string | null;
+  received_at: number;
+}
+
+// The ground station's effective position: live GNSS when there's a fix,
+// otherwise the configured fallback. Resolved by MissionStore.groundStation().
+export interface GroundStation {
+  label: string;
+  lat: number | null;
+  lon: number | null;
+  alt_m: number | null;
+  source: "gnss" | "config";
+}
+
 export interface MissionConfig {
   mission_name?: string;
   event_name?: string;
@@ -215,6 +262,7 @@ export interface SnapshotFrame {
   cots: CotsFrame | null;
   prediction: PredictionFrame | null;
   rfd_config: RfdConfigFrame | null;
+  ground: GroundFrame | null;
 }
 
 export type Frame =
@@ -225,5 +273,6 @@ export type Frame =
   | AckFrame
   | PredictionFrame
   | RfdConfigFrame
+  | GroundFrame
   | SnapshotFrame
   | ({ type: "config" } & MissionConfig);

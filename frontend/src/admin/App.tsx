@@ -76,13 +76,14 @@ export function App() {
 
 function MissionTab({ theme, sradDs, cotsDs }: { theme: "dark" | "light"; sradDs: DataState; cotsDs: DataState }) {
   const [autoFit, setAutoFit] = useState(true);
-  const cfg = store.config;
-  const gs = cfg.ground_station;
+  // Live GNSS position when the ground receiver has a fix, configured pad
+  // otherwise — so downrange/bearing are measured from where we actually are.
+  const gs = store.groundStation();
   const gps = store.srad?.gps;
   let dist = "—", bearing = "—";
   // 0,0 is the flight computer's pre-lock default, not a real position — don't
   // let it produce a bogus ~thousands-of-km downrange reading.
-  if (gs && hasGpsFix(gps?.lon, gps?.lat)) {
+  if (gs.lat != null && gs.lon != null && hasGpsFix(gps?.lon, gps?.lat)) {
     const r = haversine(gs.lat, gs.lon, gps!.lat!, gps!.lon!);
     dist = `${fmt(r.distance, 0)} m`;
     bearing = `${fmt(r.bearing, 0)}°`;
@@ -227,13 +228,51 @@ const PRED_STATUS: Record<string, { label: string; color: string }> = {
 
 // Expected landing zone from Helios.Services.LandingPredictor: predicted touchdown
 // coordinates + distance from pad, downrange-to-landing, and the 90% zone size.
+// Before the rocket flies there is no touchdown estimate to show, so on the pad
+// this slot carries the ground station's own GNSS instead — the operator's most
+// useful pre-launch numbers (are we located, how good is the fix) in the space
+// that would otherwise read "Awaiting prediction" for the whole countdown.
+function GroundStationStats() {
+  const gs = store.groundStation();
+  const g = store.ground;
+  const pos = g?.position ?? null;
+  const live = gs.source === "gnss";
+  return (
+    <div className="rs-grid">
+      <StatCell label="Pad lat" value={fmtLatLon(gs.lat)} />
+      <StatCell label="Pad lon" value={fmtLatLon(gs.lon)} />
+      <StatCell label="Elevation" value={gs.alt_m != null ? `${fmt(gs.alt_m, 0)} m` : "—"}
+        sub={pos?.alt_m != null ? "from GNSS" : "from config"} />
+      <StatCell
+        label="Fix"
+        value={g?.fix_quality_name ?? "NO DATA"}
+        sub={g ? `${g.talker_id ?? "--"}${g.sentence_type ?? ""}` : "no NMEA yet"}
+        color={live ? "var(--ok)" : "var(--warn)"}
+      />
+      <StatCell label="Satellites" value={pos?.sats != null ? String(pos.sats) : "—"} />
+      <StatCell label="HDOP" value={pos?.hdop != null ? fmt(pos.hdop, 1) : "—"}
+        sub={pos?.hdop != null && pos.hdop <= 2 ? "good" : undefined} />
+      <StatCell
+        label="Source"
+        value={live ? "GNSS" : "CONFIG"}
+        sub={live ? "live receiver" : "fallback"}
+        color={live ? "var(--ok)" : "var(--warn)"}
+      />
+      <StatCell label="Checksum" value={g ? (g.checksum_valid ? "OK" : "BAD") : "—"}
+        color={g && !g.checksum_valid ? "var(--err)" : undefined} />
+    </div>
+  );
+}
+
 function LandingPredictionPanel() {
-  const lp = store.landing;
-  const gs = store.config.ground_station;
+  const lp = store.activeLanding();
+  const gs = store.groundStation();
   const best = lp?.best_estimate ?? null;
+  // Pre-launch, with nothing predicted yet, show the ground station instead.
+  const showGround = !best && store.mission?.flight_state === "STANDBY";
 
   let fromPad = "—", brg = "—", downrange = "—", zone = "—";
-  if (best && gs) {
+  if (best && gs.lat != null && gs.lon != null) {
     const r = haversine(gs.lat, gs.lon, best.lat, best.lon);
     fromPad = `${fmt(r.distance, 0)} m`;
     brg = `${fmt(r.bearing, 0)}°`;
@@ -252,9 +291,18 @@ function LandingPredictionPanel() {
     : null;
 
   return (
-    <Panel title="Landing Prediction"
-      right={st ? <span className="mono" style={{ fontSize: 11, color: st.color }}>{st.label}</span> : undefined}>
-      {!lp || !best ? (
+    <Panel
+      title={showGround ? "Ground Station · GNSS" : "Landing Prediction"}
+      right={
+        showGround ? (
+          <span className="mono" style={{ fontSize: 11, color: "var(--text-dim)" }}>PRE-LAUNCH</span>
+        ) : st ? (
+          <span className="mono" style={{ fontSize: 11, color: st.color }}>{st.label}</span>
+        ) : undefined
+      }>
+      {showGround ? (
+        <GroundStationStats />
+      ) : !lp || !best ? (
         <div className="empty-note" style={{ padding: "12px 4px", color: "var(--text-dim)", fontSize: 12 }}>
           Awaiting prediction
         </div>
@@ -290,6 +338,12 @@ function LinkHealth({ sradDs, cotsDs }: { sradDs: DataState; cotsDs: DataState }
         <LinkStat label="cots pkts" value={fmtInt(store.link?.cots.count ?? 0)} />
         <LinkStat label="cots errs" value={fmtInt(store.link?.cots.errors ?? 0)}
           color={(store.link?.cots.errors ?? 0) > 0 ? "var(--warn)" : undefined} />
+        {/* Ground GNSS: an optional node, so "no_data" here means not deployed —
+            distinct from deployed-but-unlocked, which shows a fix quality. */}
+        <LinkStat label="gnd gps"
+          value={store.link?.ground ? store.link.ground.status.toUpperCase().replace("_", " ") : "—"}
+          color={store.ground?.position ? "var(--ok)" : "var(--warn)"} />
+        <LinkStat label="gnd pkts" value={fmtInt(store.link?.ground?.count ?? 0)} />
       </div>
     </Panel>
   );
@@ -306,6 +360,7 @@ function LinkStat({ label, value, color }: { label: string; value: string; color
 
 function ConfigPanel() {
   const cfg = store.config;
+  const gsEff = store.groundStation();
   // Ground-modem registers as reported by helios-cots-telemetry
   // (current_rfd_config). Empty until that node reports in, so the rows below
   // read "—" rather than showing a stale config-file copy.
@@ -321,7 +376,24 @@ function ConfigPanel() {
         <span className="k">expected apogee</span><span className="v">{fmt(cfg.expected_apogee_m ?? 0, 0)} m</span>
         <span className="k">refresh</span><span className="v">{cfg.ui?.refresh_hz ?? "—"} Hz</span>
         <span className="k">video src</span><span className="v">{cfg.ui?.video_source ?? "—"}</span>
-        <span className="k">ground alt</span><span className="v">{fmt(cfg.ground_station?.alt_m ?? 0, 0)} m</span>
+        {/* Pad position: live from the ground receiver's NMEA when it has a fix,
+            otherwise the mission_config.json fallback. The tag says which. */}
+        <span className="k">pad</span>
+        <span className="v">
+          {gsEff.lat != null ? `${fmtLatLon(gsEff.lat)}, ${fmtLatLon(gsEff.lon)}` : "—"}
+          <span
+            className="mono"
+            title={gsEff.source === "gnss"
+              ? `Live from Helios.Services.GroundGPS (${store.ground?.fix_quality_name})`
+              : "No GNSS fix — using mission_config.json ground_station"}
+            style={{
+              fontSize: 10, marginLeft: 6,
+              color: gsEff.source === "gnss" ? "var(--ok)" : "var(--warn)",
+            }}>
+            {gsEff.source === "gnss" ? "GNSS" : "CONFIG"}
+          </span>
+        </span>
+        <span className="k">ground alt</span><span className="v">{fmt(gsEff.alt_m ?? 0, 0)} m</span>
         <span className="k">RFD net/freq</span>
         <span className="v">{String(rfd.net_id ?? "—")} / {String(rfd.min_freq_khz ?? "—")}–{String(rfd.max_freq_khz ?? "—")}</span>
         <span className="k">RFD tx/air</span>

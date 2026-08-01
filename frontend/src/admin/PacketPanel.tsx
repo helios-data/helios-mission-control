@@ -71,11 +71,40 @@ export function SradPanel({ latest, ds }: { latest: SradFrame | null; ds: DataSt
   );
 }
 
+// An APRS packet whose payload oneof is `raw_info` rather than `position` — a
+// status/telemetry beacon, or a position beacon sent before the tracker locked.
+// The packet is real and is logged like any other; it just doesn't locate the
+// rocket, so the panel says so instead of silently showing the last known fix.
+function NoFixChip() {
+  return (
+    <span
+      className="mono"
+      title="This APRS packet carried no position (raw info only). The packet is still received and logged; the map keeps the last known fix."
+      style={{
+        fontSize: 10, letterSpacing: "0.06em", padding: "1px 5px", borderRadius: 3,
+        border: "1px solid var(--warn)", color: "var(--warn)",
+        background: "rgba(255,176,32,0.12)",
+      }}
+    >
+      NO FIX
+    </span>
+  );
+}
+
 export function CotsPanel({ latest, ds }: { latest: CotsFrame | null; ds: DataState }) {
   const stale = ds.status === "stale";
   const p = latest?.position;
+  const noFix = !!latest && !p;
   return (
-    <Panel title="COTS · TeleGPS APRS" right={<SignalIndicator label="cots" state={ds} />}>
+    <Panel
+      title="COTS · TeleGPS APRS"
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {noFix && <NoFixChip />}
+          <SignalIndicator label="cots" state={ds} />
+        </span>
+      }
+    >
       {ds.status === "no_data" || !latest ? (
         <div className="empty-note upper">No packets received</div>
       ) : (

@@ -211,11 +211,13 @@ export function App() {
             <span className="dim">lon</span><span style={{ textAlign: "right" }}>{fmtLatLon(s?.gps.lon)}</span>
             <span className="dim">fix / sats</span>
             <span style={{ textAlign: "right" }}>fix {s?.gps.fix ?? "—"} · {s?.gps.sats ?? 0} sats</span>
-            {showPred && store.landing?.best_estimate && (
+            {/* activeLanding(), not `landing`: a prediction still present in
+                STANDBY belongs to a previous flight (see store.activeLanding). */}
+            {showPred && store.activeLanding()?.best_estimate && (
               <>
                 <span style={{ color: PREDICTION.estimate }}>pred landing</span>
                 <span style={{ textAlign: "right", color: PREDICTION.estimate }}>
-                  {fmtLatLon(store.landing.best_estimate.lat)}, {fmtLatLon(store.landing.best_estimate.lon)}
+                  {fmtLatLon(store.activeLanding()!.best_estimate!.lat)}, {fmtLatLon(store.activeLanding()!.best_estimate!.lon)}
                 </span>
               </>
             )}

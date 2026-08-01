@@ -108,15 +108,15 @@ export function GpsMap({
 
   useEffect(() => {
     if (!ref.current) return;
-    // The pad is read live, not captured at mount. `store.config` is still empty
-    // when this effect runs (the WS snapshot lands a moment later), and an admin
-    // edit to `ground_station` broadcasts a fresh `config` frame at any time —
-    // so a marker planted from a mount-time value would sit at the wrong place
-    // for the life of the map. Until the pad is known, open zoomed out rather
-    // than guessing a location and fetching a region's worth of wrong tiles.
+    // The pad is read live, not captured at mount. It is genuinely dynamic now:
+    // the ground receiver (Helios.Services.GroundGPS) streams NMEA continuously,
+    // so the marker tracks it and only falls back to the configured coordinates
+    // when there is no fix. `store.config` is also empty when this effect runs
+    // (the WS snapshot lands a moment later). Until the pad is known, open
+    // zoomed out rather than guessing and fetching a region of wrong tiles.
     const pad = (): [number, number] | null => {
-      const gs = store.config.ground_station;
-      return gs ? [gs.lon, gs.lat] : null;
+      const gs = store.groundStation();
+      return gs.lat != null && gs.lon != null ? [gs.lon, gs.lat] : null;
     };
     const map = new maplibregl.Map({
       container: ref.current,
@@ -179,7 +179,7 @@ export function GpsMap({
         (map.getSource("cots-pos") as maplibregl.GeoJSONSource)?.setData(point(ct.at(-1) ?? null));
 
         // Landing prediction: fed only when enabled + present, else cleared.
-        const lp = showPredRef.current ? store.landing : null;
+        const lp = showPredRef.current ? store.activeLanding() : null;
         (map.getSource("pred-e90") as maplibregl.GeoJSONSource)?.setData(lp ? polygon(lp.ellipse_90) : EMPTY);
         (map.getSource("pred-e50") as maplibregl.GeoJSONSource)?.setData(lp ? polygon(lp.ellipse_50) : EMPTY);
         (map.getSource("pred-cloud") as maplibregl.GeoJSONSource)?.setData(lp ? multipoint(lp.dispersion_cloud) : EMPTY);

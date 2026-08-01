@@ -6,8 +6,8 @@
 
 import { useSyncExternalStore } from "react";
 import type {
-  AckFrame, CotsFrame, EventType, Frame, LinkFrame, MissionConfig, MissionEvent,
-  MissionFrame, PredictionFrame, RfdConfigFrame, SradFrame,
+  AckFrame, CotsFrame, EventType, Frame, GroundFrame, GroundStation, LinkFrame,
+  MissionConfig, MissionEvent, MissionFrame, PredictionFrame, RfdConfigFrame, SradFrame,
 } from "./telemetry";
 import { EVENT_META } from "./eventmeta";
 
@@ -37,6 +37,10 @@ export class MissionStore {
   link: LinkFrame | null = null;
   mission: MissionFrame | null = null;
   landing: PredictionFrame | null = null;
+  // Latest NMEA sentence from the ground receiver (Helios.Services.GroundGPS).
+  // Kept even with no fix, so the UI can distinguish "receiver not locked"
+  // from "node not running". Resolve position via groundStation().
+  ground: GroundFrame | null = null;
   // Ground modem's live S-registers (`current_rfd_config`) — the only source
   // for them. Null until helios-cots-telemetry reports in.
   rfdConfig: RfdConfigFrame | null = null;
@@ -142,6 +146,7 @@ export class MissionStore {
         if (f.cots) this.ingestCots(f.cots);
         if (f.prediction) this.landing = f.prediction;
         if (f.rfd_config) this.rfdConfig = f.rfd_config;
+        if (f.ground) this.ground = f.ground;
         break;
       case "srad": this.ingestSrad(f); break;
       case "cots": this.ingestCots(f); break;
@@ -149,10 +154,52 @@ export class MissionStore {
       case "mission": this.setMission(f); break;
       case "prediction": this.landing = f; break;
       case "rfd_config": this.rfdConfig = f; break;
+      case "ground": this.ground = f; break;
       case "config": { const { type, ...rest } = f; this.config = rest; break; }
       case "ack": this.ingestAck(f); break;
     }
     this.bump();
+  }
+
+  /** The ground station's effective position — live GNSS if fixed, else config.
+   *
+   * Mirrors MissionState.ground_station() on the backend. Everything that draws
+   * or measures from the pad goes through here so the map marker, the downrange
+   * readouts and the COTS AGL baseline can never disagree about where we are.
+   * Altitude falls back independently: NMEA RMC sentences carry a position but
+   * no altitude, and blanking the configured elevation would skew COTS AGL.
+   */
+  groundStation(): GroundStation {
+    const cfg = this.config.ground_station;
+    const pos = this.ground?.position;
+    if (pos && pos.lat != null && pos.lon != null) {
+      return {
+        label: cfg?.label ?? "Ground Station",
+        lat: pos.lat,
+        lon: pos.lon,
+        alt_m: pos.alt_m ?? cfg?.alt_m ?? null,
+        source: "gnss",
+      };
+    }
+    return {
+      label: cfg?.label ?? "Ground Station",
+      lat: cfg?.lat ?? null,
+      lon: cfg?.lon ?? null,
+      alt_m: cfg?.alt_m ?? null,
+      source: "config",
+    };
+  }
+
+  /** The landing prediction for the *current* flight, or null.
+   *
+   * A touchdown estimate cannot belong to a flight that hasn't launched, so
+   * anything still present in STANDBY is left over from a previous run — the
+   * predictor keeps republishing its last result, and the sim loops outright.
+   * Treated as absent so the pad view isn't cluttered with a stale zone on the
+   * map or a stale FINAL in the panel.
+   */
+  activeLanding(): PredictionFrame | null {
+    return this.mission?.flight_state === "STANDBY" ? null : this.landing;
   }
 
   private setMission(m: MissionFrame | null) {
@@ -199,7 +246,7 @@ export class MissionStore {
     const p = f.position;
     if (p && p.altitude_m !== null) {
       // COTS altitude is MSL-ish (ft->m); show AGL against ground_altitude.
-      const ground = this.config.ground_station?.alt_m ?? this.srad?.ground_altitude ?? 0;
+      const ground = this.groundStation().alt_m ?? this.srad?.ground_altitude ?? 0;
       this._lastCotsAlt = p.altitude_m - ground;
     }
     if (hasGpsFix(p?.lon, p?.lat)) {

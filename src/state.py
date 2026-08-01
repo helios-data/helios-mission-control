@@ -125,11 +125,16 @@ class MissionState:
         # Landing-prediction node (Helios.Services.LandingPredictor) is low-rate and
         # optional; a generous stale window so a paused predictor reads STALE, not gone.
         self.landing_link = LinkTracker(stale_after_s=ui.get("landing_stale_seconds", 30))
+        # Ground-station GNSS (Helios.Services.GroundGPS). Optional node — the
+        # config coordinates stand in when it isn't running or has no fix.
+        self.ground_link = LinkTracker(stale_after_s=ui.get("ground_stale_seconds", 15))
         self.core_connected = False
 
         self.srad_latest: dict[str, Any] | None = None
         self.cots_latest: dict[str, Any] | None = None
         self.landing_latest: dict[str, Any] | None = None
+        # Latest NMEA sentence from the ground receiver, fix or not.
+        self.ground_latest: dict[str, Any] | None = None
         # Ground modem's actual S-registers, as reported by helios-cots-telemetry
         # on `current_rfd_config`. None until that node reports in.
         self.rfd_config_latest: dict[str, Any] | None = None
@@ -227,6 +232,46 @@ class MissionState:
         self._emit("landing", pred)
         return pred
 
+    def ingest_ground(self, frame: dict[str, Any]) -> dict[str, Any]:
+        """Store the latest ground-receiver NMEA sentence and mark its link fresh.
+
+        Kept even when it carries no fix: a stream of INVALID sentences is how the
+        operator can tell the receiver is alive but hasn't locked, which is very
+        different from the node not running at all. :meth:`ground_station` decides
+        whether it's usable as a position.
+        """
+        self.ground_latest = frame
+        self.ground_link.mark()
+        self._emit("ground", frame)
+        return frame
+
+    def ground_station(self) -> dict[str, Any]:
+        """The ground station's effective position, live GNSS preferred.
+
+        The configured ``ground_station`` block is the fallback, used when the
+        GroundGPS node isn't publishing or its sentences carry no usable fix.
+        ``source`` is ``"gnss"`` or ``"config"`` so the UI can show which is live;
+        ``label`` always comes from the config since it names the marker.
+        """
+        cfg = self.config.get("ground_station") or {}
+        out: dict[str, Any] = {
+            "label": cfg.get("label", "Ground Station"),
+            "lat": cfg.get("lat"),
+            "lon": cfg.get("lon"),
+            "alt_m": cfg.get("alt_m"),
+            "source": "config",
+        }
+        pos = (self.ground_latest or {}).get("position")
+        if pos and pos.get("lat") is not None and pos.get("lon") is not None:
+            out["lat"] = pos["lat"]
+            out["lon"] = pos["lon"]
+            # Altitude is separately optional in NMEA (RMC has none), so keep the
+            # configured elevation rather than blanking the COTS AGL baseline.
+            if pos.get("alt_m") is not None:
+                out["alt_m"] = pos["alt_m"]
+            out["source"] = "gnss"
+        return out
+
     def ingest_rfd_config(self, cfg: dict[str, Any]) -> dict[str, Any]:
         """Store the ground modem's reported S-registers and fan the frame out.
 
@@ -320,6 +365,7 @@ class MissionState:
             "srad": self.srad_link.snapshot(),
             "cots": self.cots_link.snapshot(),
             "landing": self.landing_link.snapshot(),
+            "ground": self.ground_link.snapshot(),
         }
 
     def mission_snapshot(self) -> dict[str, Any]:
@@ -352,4 +398,5 @@ class MissionState:
             "cots": self.cots_latest,
             "prediction": self.landing_latest,
             "rfd_config": self.rfd_config_latest,
+            "ground": self.ground_latest,
         }

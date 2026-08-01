@@ -32,6 +32,32 @@ IN_FLIGHT_STATES: frozenset[str] = frozenset(
     {"ASCENT", "MACH_LOCK", "DROGUE_DESCENT", "MAIN_DESCENT"}
 )
 
+# --- NMEA fix quality (mirrors helios-protos NmeaPosition.FixQuality) --------
+# Index = the proto enum value. INVALID (0) means the receiver has no fix, so the
+# lat/lon in that sentence are meaningless and the ground station falls back to
+# the configured coordinates. Mirrored in frontend/src/lib/telemetry.ts.
+NMEA_FIX_QUALITY: tuple[str, ...] = (
+    "INVALID",     # 0 - no fix
+    "GPS",         # 1 - standard
+    "DGPS",        # 2 - differential
+    "PPS",         # 3
+    "RTK_FIXED",   # 4
+    "RTK_FLOAT",   # 5
+    "ESTIMATED",   # 6 - dead reckoning
+    "MANUAL",      # 7
+    "SIMULATION",  # 8
+)
+NMEA_FIX_INVALID = 0
+
+
+def nmea_fix_name(value: object) -> str:
+    """Fix-quality enum value (or betterproto enum) -> name, UNKNOWN if out of range."""
+    try:
+        idx = int(getattr(value, "value", value))
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    return NMEA_FIX_QUALITY[idx] if 0 <= idx < len(NMEA_FIX_QUALITY) else "UNKNOWN"
+
 # --- RFD900x ground-modem S-register limits (§4.7) ---------------------------
 # Accepted values for an `rfd_config` command. Keys must match falcon-protos
 # `RfdConfig` exactly -- `helios_bridge._proto_fields` drops anything that isn't
