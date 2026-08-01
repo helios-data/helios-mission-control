@@ -248,7 +248,7 @@ class SyntheticFlight:
             # Receiver alive but unlocked: a raw sentence with no position at all.
             return {
                 "type": "ground", "talker_id": "GP", "sentence_type": "GSV",
-                "checksum_valid": True, "timestamp": None,
+                "checksum_valid": True, "timestamp": time.time(),
                 "fix_quality": 0, "fix_quality_name": "INVALID",
                 "position": None,
                 "raw_sentence": "$GPGSV,3,1,11,01,05,040,18,03,22,110,24,06,68,210,31*7A",
@@ -263,7 +263,9 @@ class SyntheticFlight:
             "talker_id": "GN",
             "sentence_type": "GGA" if gga else "RMC",
             "checksum_valid": True,
-            "timestamp": None,
+            # Real GGA/RMC always carry a UTC time; epoch seconds here to match
+            # what telemetry._epoch produces from the proto's Timestamp.
+            "timestamp": time.time(),
             "fix_quality": 1,
             "fix_quality_name": "GPS",
             "position": {

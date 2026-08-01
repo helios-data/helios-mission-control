@@ -52,6 +52,31 @@ def _int(obj: object, *names: str) -> int | None:
         return None
 
 
+def _epoch(obj: object, *names: str) -> float | None:
+    """A proto ``google.protobuf.Timestamp`` field -> epoch seconds, or None.
+
+    betterproto2 surfaces those as ``datetime``, which is **not** JSON
+    serializable — and these frames are required to be plain JSON-able dicts
+    (see the module docstring) because they go straight out over the WebSocket.
+    Leaking a datetime here silently killed every ``/ws`` connection at the
+    snapshot send and put the browser in a 1.5 s reconnect loop. Epoch seconds
+    also match `received_at` and the frontend's `timestamp: number | null`.
+    """
+    v = _get(obj, *names)
+    if v is None:
+        return None
+    ts = getattr(v, "timestamp", None)
+    if callable(ts):  # datetime
+        try:
+            return float(ts())
+        except (TypeError, ValueError, OSError):
+            return None
+    try:
+        return float(v)  # already numeric
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_srad(pkt: object) -> dict[str, Any]:
     """betterproto TelemetryPacket -> normalized SRAD frame."""
 
@@ -214,7 +239,9 @@ def normalize_ground(pkt: object) -> dict[str, Any]:
         "talker_id": _get(pkt, "talker_id"),
         "sentence_type": _get(pkt, "sentence_type"),
         "checksum_valid": bool(_get(pkt, "checksum_valid")),
-        "timestamp": _get(pkt, "timestamp"),
+        # GGA/RMC always carry a UTC time, so this is set on essentially every
+        # sentence — it must be JSON-safe. See _epoch.
+        "timestamp": _epoch(pkt, "timestamp"),
         "fix_quality": fix_q,
         "fix_quality_name": nmea_fix_name(fix_q),
         "position": position,
@@ -247,7 +274,10 @@ def normalize_cots(pkt: object) -> dict[str, Any]:
         "source_ssid": _get(pkt, "source_ssid") or 0,
         "destination": _get(pkt, "destination"),
         "path": list(_get(pkt, "digi_path", "path") or []),
-        "timestamp": _get(pkt, "timestamp"),
+        # Optional in AprsPacket and absent on most packet types, which is the
+        # only reason this never blew up before NMEA arrived — but on @ and /
+        # position reports it is a datetime, so it needs the same treatment.
+        "timestamp": _epoch(pkt, "timestamp"),
         "position": position,
         "raw_info": _get(pkt, "raw_info"),
     }

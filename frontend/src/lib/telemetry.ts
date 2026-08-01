@@ -201,7 +201,7 @@ export interface GroundFrame {
   talker_id: string | null;
   sentence_type: string | null;  // GGA / RMC / VTG / ...
   checksum_valid: boolean;
-  timestamp: unknown;
+  timestamp: number | null;  // epoch seconds; GGA/RMC always carry a UTC time
   fix_quality: number;
   fix_quality_name: NmeaFixQuality;
   position: GroundPosition | null;
