@@ -39,7 +39,7 @@ RUN uv sync --frozen --extra dev --no-install-project
 COPY helios-python-sdk/ ./helios-python-sdk/
 COPY falcon-protos/ ./falcon-protos/
 COPY protos-proposed/ ./protos-proposed/
-COPY helios-protos/ /helios-protos/ 
+COPY helios-protos/ ./helios-protos/ 
 # Install the Helios SDK (its build hook regenerates protos, incl. AprsPacket,
 # from the nested helios-protos submodule) — only if the submodule is present.
 RUN if [ -f helios-python-sdk/pyproject.toml ]; then uv pip install -e helios-python-sdk; fi
