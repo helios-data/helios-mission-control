@@ -65,17 +65,42 @@ RFD_CONFIG_RETRY_S = 5.0
 SEED_TIMEOUT_S = 2.0
 
 
-def _load_proto_classes() -> tuple[Any, Any]:
-    """Import the generated betterproto packet classes (raises if missing).
+def _load_aprs_class() -> Any | None:
+    """The AprsPacket class, preferring our own compiled helios-protos.
 
-    ``AprsPacket`` now comes from the **helios-protos submodule** compiled by
-    ``make protos`` (``helios.transport`` package), not from the SDK's own
-    generated copy — one checked-in schema for both APRS and NMEA.
+    Falls back to the SDK's generated copy, then to ``None``. It must degrade
+    rather than raise: APRS is one of four independent streams, and an image
+    built without helios-protos should still fly SRAD, NMEA and the command path
+    instead of losing everything. (That regression is exactly what happened when
+    this import was made unconditional — see `run`.)
     """
-    from src.generated import TelemetryPacket  # noqa: PLC0415 - lazy by design
-    from src.generated.helios.transport import AprsPacket  # noqa: PLC0415
+    try:
+        from src.generated.helios.transport import AprsPacket  # noqa: PLC0415 - lazy by design
 
-    return TelemetryPacket, AprsPacket
+        return AprsPacket
+    except ImportError:
+        pass
+    try:
+        from helios.generated.helios.transport import AprsPacket  # type: ignore  # noqa: PLC0415
+
+        log.warning(
+            "helios-protos AprsPacket not compiled into src/generated; falling back to the "
+            "SDK's copy. Run `make protos` (or check the image build compiles -I helios-protos)."
+        )
+        return AprsPacket
+    except ImportError:
+        log.error(
+            "no AprsPacket available from src.generated.helios.transport or the SDK — "
+            "COTS/APRS disabled until `make protos`. Other streams are unaffected."
+        )
+        return None
+
+
+def _load_telemetry_class() -> Any:
+    """The TelemetryPacket class (falcon-protos). Raises if it isn't compiled."""
+    from src.generated import TelemetryPacket  # noqa: PLC0415 - lazy by design
+
+    return TelemetryPacket
 
 
 def _proto_fields(cls: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -95,11 +120,18 @@ class HeliosBridge:
     async def run(self) -> None:
         from helios import HeliosClient  # noqa: PLC0415
 
-        self._telemetry_cls, self._aprs_cls = _load_proto_classes()
         cfg = self.state.config
         backoff = 1.0
         while True:
             try:
+                # Loaded inside the loop, not before it. Hoisted out, a missing
+                # generated class raised straight out of run(), killing the task
+                # before it ever connected — so SRAD, COTS, NMEA *and* the
+                # command path all went dead at once with no retry and no
+                # reconnect. In here it is just another startup failure: logged,
+                # backed off, retried.
+                self._telemetry_cls = _load_telemetry_class()
+                self._aprs_cls = _load_aprs_class()
                 self.client = HeliosClient(
                     core_address=cfg.get("core_address", "Helios"),
                     core_port=cfg.get("core_port", 5000),
@@ -156,6 +188,8 @@ class HeliosBridge:
                     await self.hub.broadcast(self.state.ingest_srad(frame))
 
     async def _subscribe_cots(self) -> None:
+        if self._aprs_cls is None:
+            return  # no AprsPacket compiled; the other streams carry on regardless
         async with self.client.subscribe_event(address=COTS_ADDRESS, event_name=COTS_EVENT) as events:
             async for event in events:
                 frame = self._parse_cots(event.data)
