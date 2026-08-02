@@ -116,7 +116,7 @@ async def run_standalone(
     tick = 0
     aprs_period_ticks = max(1, int(hz / 0.2))  # ~0.2 Hz APRS
     pred_period_ticks = max(1, int(hz / 1.0))   # ~1 Hz landing predictions
-    ground_period_ticks = max(1, int(hz / 1.0))  # ~1 Hz ground-station NMEA
+    ground_period_ticks = max(1, int(hz / 5.0))  # ~5 Hz: the receiver's 5-sentence cycle at 1 Hz
     housekeeping_ticks = max(1, int(hz / 4))    # link/mission ~4 Hz
     aprs_count = 0
 

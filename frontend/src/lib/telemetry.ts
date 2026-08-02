@@ -233,6 +233,9 @@ export interface MissionConfig {
     refresh_hz?: number;
     srad_stale_seconds?: number;
     cots_stale_seconds?: number;
+    // How long a GNSS fix stays authoritative after the last positional
+    // sentence, before the ground station reverts to the configured coordinates.
+    ground_stale_seconds?: number;
     sponsor_rotate_seconds?: number; // dwell per sponsor section on the overlay
     // Set by the backend from run mode, not user-edited:
     //   webrtc-url    -> WHEP from the go2rtc Video node (production)

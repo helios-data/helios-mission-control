@@ -235,7 +235,10 @@ const PRED_STATUS: Record<string, { label: string; color: string }> = {
 function GroundStationStats() {
   const gs = store.groundStation();
   const g = store.ground;
-  const pos = g?.position ?? null;
+  // Accumulated across sentence types, not the newest sentence: satellites,
+  // HDOP and altitude only ever arrive on GGA, so reading them off an RMC (or a
+  // VTG/GSA/GSV) blanked them several times a second.
+  const pos = store.groundFix;
   const live = gs.source === "gnss";
   return (
     <div className="rs-grid">
@@ -243,9 +246,12 @@ function GroundStationStats() {
       <StatCell label="Pad lon" value={fmtLatLon(gs.lon)} />
       <StatCell label="Elevation" value={gs.alt_m != null ? `${fmt(gs.alt_m, 0)} m` : "—"}
         sub={pos?.alt_m != null ? "from GNSS" : "from config"} />
+      {/* Fix quality comes from the last *positional* sentence; the sub-label
+          shows whatever sentence just arrived, which is how you can see the
+          receiver's cycle (VTG/GGA/GSA/RMC) ticking over. */}
       <StatCell
         label="Fix"
-        value={g?.fix_quality_name ?? "NO DATA"}
+        value={store.groundFixQuality ?? (g ? "NO FIX" : "NO DATA")}
         sub={g ? `${g.talker_id ?? "--"}${g.sentence_type ?? ""}` : "no NMEA yet"}
         color={live ? "var(--ok)" : "var(--warn)"}
       />
@@ -384,7 +390,7 @@ function ConfigPanel() {
           <span
             className="mono"
             title={gsEff.source === "gnss"
-              ? `Live from Helios.Services.GroundGPS (${store.ground?.fix_quality_name})`
+              ? `Live from Helios.Services.GroundGPS (${store.groundFixQuality})`
               : "No GNSS fix — using mission_config.json ground_station"}
             style={{
               fontSize: 10, marginLeft: 6,

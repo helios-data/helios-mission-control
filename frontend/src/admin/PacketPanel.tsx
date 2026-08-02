@@ -8,12 +8,8 @@ import { fmt, fmtInt, fmtLatLon } from "../lib/units";
 
 function LogControls({ source }: { source: "srad" | "cots" }) {
   const [recording, setRecording] = useState(false);
-  const [msg, setMsg] = useState("");
   return (
     <div className="row-actions">
-      <button onClick={async () => setMsg((await api.logNow(source) as { file?: string }).file ?? "logged")}>
-        Log now
-      </button>
       <button
         className={recording ? "rec" : ""}
         onClick={async () => {
@@ -26,7 +22,6 @@ function LogControls({ source }: { source: "srad" | "cots" }) {
       <a href={`/api/logs`} target="_blank" rel="noreferrer">
         <button>Logs ▾</button>
       </a>
-      {msg && <span className="faint mono" style={{ fontSize: 11 }}>saved {msg}</span>}
     </div>
   );
 }

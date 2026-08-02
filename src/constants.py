@@ -49,6 +49,14 @@ NMEA_FIX_QUALITY: tuple[str, ...] = (
 )
 NMEA_FIX_INVALID = 0
 
+# Sentence types that can carry a position — mirrors helios-ground-gps
+# `decoder.nmea.POSITION_SENTENCES`. Everything else the receiver emits (VTG,
+# GSA, GSV, ...) is forwarded as raw text with no Fix, and must NEVER be read as
+# "we lost the position": those sentences structurally cannot carry one. Treating
+# them as a loss made the ground station strobe back to the configured
+# coordinates several times a second, since only ~1 in 4 sentences is positional.
+NMEA_POSITION_SENTENCES: frozenset[str] = frozenset({"GGA", "RMC", "GLL"})
+
 
 def nmea_fix_name(value: object) -> str:
     """Fix-quality enum value (or betterproto enum) -> name, UNKNOWN if out of range."""

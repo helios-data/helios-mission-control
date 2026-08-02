@@ -1,11 +1,12 @@
 """Packet logging: CSV + JSONL capture of SRAD & COTS packets (§3.2).
 
-Two modes, both exposed on the admin console:
-  - "Log now": snapshot the current latest packet to an append-only file.
-  - "Record":  continuous capture of every packet for a source until stopped.
+One mode, exposed on the admin console as **Record**: continuous capture of every
+packet for a source until stopped. (A one-shot "Log now" snapshot existed until
+2026-08-02; it was removed so every logged packet goes through the same path.)
 
-Continuous capture is driven by MissionState sinks (state.subscribe), so it runs
-identically in STANDALONE and live modes.
+Capture is driven by MissionState sinks (state.subscribe), so it runs identically
+in STANDALONE and live modes. Every row is stamped with its arrival time and the
+CSV schema widens safely as frame shapes change — see `_Recorder.write`.
 """
 
 from __future__ import annotations
@@ -181,26 +182,9 @@ class PacketLogger:
             "since": rec.started, "csv": rec.csv_path.name,
         }
 
-    # ---- one-shot snapshot ----------------------------------------------
-    def log_now(self, source: str, frame: dict[str, Any] | None) -> dict[str, Any]:
-        if frame is None:
-            return {"ok": False, "error": "no packet available yet"}
-        stamped = {**_stamp(), **frame}
-        flat = _flatten(stamped)
-        jsonl_path = self.dir / f"{source}_snapshots.jsonl"
-        csv_path = self.dir / f"{source}_snapshots.csv"
-        with jsonl_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(stamped) + "\n")
-        write_header = not csv_path.exists()
-        with csv_path.open("a", encoding="utf-8", newline="") as f:
-            # Appending to an existing snapshot file keeps that file's header, so
-            # a shape change can still drop columns here (unlike recordings,
-            # which roll a segment). The JSONL alongside is always complete.
-            w = csv.DictWriter(f, fieldnames=list(flat.keys()))
-            if write_header:
-                w.writeheader()
-            w.writerow(flat)
-        return {"ok": True, "file": csv_path.name}
+    # One-shot "log now" snapshotting was removed 2026-08-02: continuous Record
+    # is the only capture path, so every logged packet goes through _Recorder and
+    # gets the same stamping, schema-widening and rotation handling.
 
     # ---- listing / download ---------------------------------------------
     def list_logs(self) -> list[dict[str, Any]]:

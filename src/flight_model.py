@@ -38,6 +38,9 @@ _POST_APOGEE_PHASES = ("DROGUE_DESCENT", "MAIN_DESCENT", "LANDED")
 # fallback and switches to live — and it sits a short way off the pad, since the
 # operator's table is not the launch rail.
 _GROUND_ACQUIRE_S = 3.0
+# One second of a real receiver's output, in order (see the GPS serial capture in
+# .claude/memory). Only GGA and RMC carry a position; VTG/GSA/GSV are raw text.
+_GROUND_SENTENCE_CYCLE = ("VTG", "GGA", "GSA", "RMC", "GSV")
 _GROUND_OFFSET_N_M = 35.0
 _GROUND_OFFSET_E_M = -20.0
 
@@ -242,16 +245,39 @@ class SyntheticFlight:
         exercise the "keep the configured elevation" branch in
         MissionState.ground_station.
         """
+        # Walk the receiver's real sentence cycle rather than alternating two
+        # position sentences: a u-blox-class receiver emits VTG, GGA, GSA, RMC
+        # (+ occasional GSV) once a second, and only GGA/RMC carry a position at
+        # all. Reproducing that here is what makes the "flashes back to config"
+        # bug visible in STANDALONE instead of only against real hardware.
+        self._ground_seq = getattr(self, "_ground_seq", -1) + 1
+        kind = _GROUND_SENTENCE_CYCLE[self._ground_seq % len(_GROUND_SENTENCE_CYCLE)]
         acquiring = self.t < _GROUND_ACQUIRE_S
-        gga = int(self.t) % 2 == 0
-        if acquiring:
-            # Receiver alive but unlocked: a raw sentence with no position at all.
+        gga = kind == "GGA"
+        if kind not in ("GGA", "RMC"):
+            # Non-positional sentence: raw text only, exactly as helios-ground-gps
+            # forwards it. Must not disturb the ground station's position.
             return {
-                "type": "ground", "talker_id": "GP", "sentence_type": "GSV",
+                "type": "ground", "talker_id": "GP", "sentence_type": kind,
                 "checksum_valid": True, "timestamp": time.time(),
                 "fix_quality": 0, "fix_quality_name": "INVALID",
                 "position": None,
-                "raw_sentence": "$GPGSV,3,1,11,01,05,040,18,03,22,110,24,06,68,210,31*7A",
+                "raw_sentence": f"$GP{kind},0.00,T,,M,0.00,N,0.00,K,N*32",
+            }
+        if acquiring:
+            # Receiver alive but not yet locked. A real one still emits GGA/RMC,
+            # just with the coordinate fields empty (GGA quality 0, RMC status V)
+            # — see the serial capture in .claude/memory — and helios-ground-gps
+            # forwards those as raw_sentence because there is no Fix to decode.
+            # Keeping the real sentence_type exercises the "positional sentence
+            # reporting no fix" path rather than inventing a GSV.
+            return {
+                "type": "ground", "talker_id": "GP", "sentence_type": kind,
+                "checksum_valid": True, "timestamp": time.time(),
+                "fix_quality": 0, "fix_quality_name": "INVALID",
+                "position": None,
+                "raw_sentence": ("$GPGGA,235957.800,,,,,0,00,,,M,,M,,*7F" if gga
+                                 else "$GPRMC,235957.800,V,,,,,0.00,0.00,050180,,,N*46"),
                 "received_at": time.time(),
             }
         m_per_deg_lat = 111320.0

@@ -6,7 +6,8 @@
 
 import { useSyncExternalStore } from "react";
 import type {
-  AckFrame, CotsFrame, EventType, Frame, GroundFrame, GroundStation, LinkFrame,
+  AckFrame, CotsFrame, EventType, Frame, GroundFrame, GroundPosition, GroundStation,
+  LinkFrame, NmeaFixQuality,
   MissionConfig, MissionEvent, MissionFrame, PredictionFrame, RfdConfigFrame, SradFrame,
 } from "./telemetry";
 import { EVENT_META } from "./eventmeta";
@@ -37,10 +38,18 @@ export class MissionStore {
   link: LinkFrame | null = null;
   mission: MissionFrame | null = null;
   landing: PredictionFrame | null = null;
-  // Latest NMEA sentence from the ground receiver (Helios.Services.GroundGPS).
-  // Kept even with no fix, so the UI can distinguish "receiver not locked"
-  // from "node not running". Resolve position via groundStation().
+  // Latest NMEA sentence from the ground receiver (Helios.Services.GroundGPS),
+  // of any type — for showing what just arrived. Kept even with no fix, so the
+  // UI can distinguish "receiver not locked" from "node not running".
   ground: GroundFrame | null = null;
+  // Accumulated last-known-good position, built across sentence types: only
+  // GGA/RMC/GLL carry a position at all, and only GGA carries altitude,
+  // satellites and HDOP. Resolving from the newest sentence alone made every
+  // field strobe back to the config fallback ~3 times a second. Resolve via
+  // groundStation(); this mirrors MissionState.ingest_ground on the backend.
+  groundFix: Partial<GroundPosition> | null = null;
+  groundFixAt: number | null = null;          // epoch ms of the last position
+  groundFixQuality: NmeaFixQuality | null = null;  // from the last positional sentence
   // Ground modem's live S-registers (`current_rfd_config`) — the only source
   // for them. Null until helios-cots-telemetry reports in.
   rfdConfig: RfdConfigFrame | null = null;
@@ -146,7 +155,7 @@ export class MissionStore {
         if (f.cots) this.ingestCots(f.cots);
         if (f.prediction) this.landing = f.prediction;
         if (f.rfd_config) this.rfdConfig = f.rfd_config;
-        if (f.ground) this.ground = f.ground;
+        if (f.ground) this.ingestGround(f.ground);
         break;
       case "srad": this.ingestSrad(f); break;
       case "cots": this.ingestCots(f); break;
@@ -154,7 +163,7 @@ export class MissionStore {
       case "mission": this.setMission(f); break;
       case "prediction": this.landing = f; break;
       case "rfd_config": this.rfdConfig = f; break;
-      case "ground": this.ground = f; break;
+      case "ground": this.ingestGround(f); break;
       case "config": { const { type, ...rest } = f; this.config = rest; break; }
       case "ack": this.ingestAck(f); break;
     }
@@ -171,22 +180,25 @@ export class MissionStore {
    */
   groundStation(): GroundStation {
     const cfg = this.config.ground_station;
-    const pos = this.ground?.position;
-    if (pos && pos.lat != null && pos.lon != null) {
-      return {
-        label: cfg?.label ?? "Ground Station",
-        lat: pos.lat,
-        lon: pos.lon,
-        alt_m: pos.alt_m ?? cfg?.alt_m ?? null,
-        source: "gnss",
-      };
-    }
-    return {
+    const fallback: GroundStation = {
       label: cfg?.label ?? "Ground Station",
       lat: cfg?.lat ?? null,
       lon: cfg?.lon ?? null,
       alt_m: cfg?.alt_m ?? null,
       source: "config",
+    };
+    const fix = this.groundFix;
+    if (!fix || this.groundFixAt == null) return fallback;
+    // A fix that stopped arriving eventually stops being the truth.
+    const ttlMs = (this.config.ui?.ground_stale_seconds ?? 15) * 1000;
+    if (Date.now() - this.groundFixAt > ttlMs) return fallback;
+    if (fix.lat == null || fix.lon == null) return fallback;
+    return {
+      label: cfg?.label ?? "Ground Station",
+      lat: fix.lat,
+      lon: fix.lon,
+      alt_m: fix.alt_m ?? cfg?.alt_m ?? null,
+      source: "gnss",
     };
   }
 
@@ -252,6 +264,27 @@ export class MissionStore {
     if (hasGpsFix(p?.lon, p?.lat)) {
       push(this.cotsTrack, [p!.lon!, p!.lat!] as [number, number], MAX_TRACK);
     }
+  }
+
+  // Sentence types that can carry a position — mirrors helios-ground-gps
+  // decoder.nmea.POSITION_SENTENCES and src/constants.py. VTG/GSA/GSV are
+  // forwarded as raw text with no fix and say nothing about where we are.
+  private static POSITION_SENTENCES = new Set(["GGA", "RMC", "GLL"]);
+
+  private ingestGround(f: GroundFrame) {
+    this.ground = f;
+    if (!MissionStore.POSITION_SENTENCES.has((f.sentence_type ?? "").toUpperCase())) return;
+    // Only positional sentences are authoritative about fix state.
+    this.groundFixQuality = f.fix_quality_name;
+    if (!f.position) return;
+    const merged: Partial<GroundPosition> = { ...(this.groundFix ?? {}) };
+    // Merge, don't replace: an RMC must not wipe the altitude/satellites/HDOP
+    // that the preceding GGA supplied.
+    for (const [k, v] of Object.entries(f.position)) {
+      if (v !== null && v !== undefined) (merged as Record<string, unknown>)[k] = v;
+    }
+    this.groundFix = merged;
+    this.groundFixAt = Date.now();
   }
 
   private ingestAck(f: AckFrame) {

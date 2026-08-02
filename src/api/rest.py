@@ -72,13 +72,9 @@ async def patch_config(req: Request, patch: ConfigPatch) -> dict[str, Any]:
 
 
 # ---- packet logging ------------------------------------------------------
-@router.post("/log/{source}")
-async def log_now(req: Request, source: Literal["srad", "cots"]) -> dict[str, Any]:
-    state = _mission(req)
-    latest = state.srad_latest if source == "srad" else state.cots_latest
-    return req.app.state.logger.log_now(source, latest)
-
-
+# There is no one-shot "log now" endpoint: snapshotting a single packet was
+# removed at Jason's request (2026-08-02). Continuous Record is the only capture
+# path, which also means every logged packet comes from one code path.
 class RecordBody(BaseModel):
     action: Literal["start", "stop"]
 

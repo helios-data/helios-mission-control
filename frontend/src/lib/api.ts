@@ -18,7 +18,6 @@ export const api = {
   patchConfig: (patch: Record<string, unknown>) =>
     req("/api/config", { method: "PATCH", body: JSON.stringify(patch) }),
 
-  logNow: (source: "srad" | "cots") => req(`/api/log/${source}`, { method: "POST" }),
   record: (source: "srad" | "cots", action: "start" | "stop") =>
     req(`/api/record/${source}`, { method: "POST", body: JSON.stringify({ action }) }),
   recordStatus: () => req<Record<string, { recording: boolean; count?: number }>>("/api/record"),
