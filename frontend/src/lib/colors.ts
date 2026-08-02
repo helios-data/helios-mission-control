@@ -42,7 +42,6 @@ export const SERIES = {
   baro0: "#3d6b8a",
   baro1: "#6a4f8a",
   cots: "#ffb020",
-  expected: "#4a5568",
   sradTrack: "#5ad1ff",
   cotsTrack: "#ffb020",
 };

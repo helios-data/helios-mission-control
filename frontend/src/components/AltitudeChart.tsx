@@ -5,31 +5,14 @@ import { SERIES } from "../lib/colors";
 import type { MissionStore } from "../lib/store";
 import { PlotLegend, type LegendItem } from "./PlotLegend";
 
-// Expected flight profile: [seconds_since_liftoff, altitude_agl_m][]
-export type Profile = [number, number][];
-
 type WindowMode = "full" | "follow";
 const FOLLOW_SECONDS = 30;
 const PREROLL_SECONDS = 5; // static window locks its start this long before ascent
 
-function interp(profile: Profile, t: number): number | null {
-  if (profile.length === 0 || t < profile[0][0] || t > profile[profile.length - 1][0]) return null;
-  for (let i = 1; i < profile.length; i++) {
-    if (t <= profile[i][0]) {
-      const [t0, a0] = profile[i - 1];
-      const [t1, a1] = profile[i];
-      const f = t1 === t0 ? 0 : (t - t0) / (t1 - t0);
-      return a0 + f * (a1 - a0);
-    }
-  }
-  return profile[profile.length - 1][1];
-}
-
 export function AltitudeChart({
-  store, profile, height = 240, liveHz = 8, dark = true, fill = false,
+  store, height = 240, liveHz = 8, dark = true, fill = false,
 }: {
   store: MissionStore;
-  profile?: Profile;
   height?: number;
   liveHz?: number;
   dark?: boolean;
@@ -107,13 +90,12 @@ export function AltitudeChart({
       ],
       series: [
         { label: "t+ (s)" },
-        { label: "Expected", stroke: SERIES.expected, width: 1, dash: [6, 5], points: { show: false } },
         { label: "Baro avg AGL", stroke: SERIES.baroAvg, width: 2, points: { show: false } },
         { label: "Kalman", stroke: SERIES.kf, width: 1, points: { show: false } },
         { label: "COTS AGL", stroke: SERIES.cots, width: 1.5, points: { show: false } },
       ],
     };
-    const plot = new uPlot(opts, [[], [], [], [], []], ref.current);
+    const plot = new uPlot(opts, [[], [], [], []], ref.current);
     plotRef.current = plot;
 
     const ro = new ResizeObserver(() =>
@@ -127,20 +109,16 @@ export function AltitudeChart({
       let liftoffX = 0;
       for (let i = 0; i < n; i++) { if (a.baroAvg[i] > 5) { liftoffX = a.x[i]; break; } }
       liftoffRef.current = liftoffX;
-      const expected = profile
-        ? a.x.map((x) => interp(profile, x - liftoffX))
-        : new Array(n).fill(null);
-      plot.setData([a.x, expected as number[], a.baroAvg, a.kf, a.cots as number[]]);
+      plot.setData([a.x, a.baroAvg, a.kf, a.cots as number[]]);
     }, 1000 / liveHz);
 
     return () => { window.clearInterval(timer); ro.disconnect(); plot.destroy(); };
-  }, [store, profile, height, liveHz, dark, fill]);
+  }, [store, height, liveHz, dark, fill]);
 
   const legend: LegendItem[] = [
     { label: "Baro avg AGL", color: SERIES.baroAvg },
     { label: "Kalman", color: SERIES.kf },
     { label: "COTS AGL", color: SERIES.cots },
-    ...(profile ? [{ label: "Expected", color: SERIES.expected, dash: true }] : []),
   ];
 
   return (

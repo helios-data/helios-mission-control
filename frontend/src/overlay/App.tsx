@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { StateBadge } from "../components/StateBadge";
-import { AltitudeChart, type Profile } from "../components/AltitudeChart";
+import { AltitudeChart } from "../components/AltitudeChart";
 import { GpsMap } from "../components/GpsMap";
 import { Rocket3D } from "../components/Rocket3D";
 import { SignalDot } from "../components/SignalDot";
@@ -20,24 +20,6 @@ function useClocks() {
   const [t, setT] = useState(() => new Date());
   useEffect(() => { const id = setInterval(() => setT(new Date()), 500); return () => clearInterval(id); }, []);
   return t;
-}
-
-// Load optional expected flight profile: CSV "time_s,altitude_m".
-function useProfile(): Profile | undefined {
-  const [p, setP] = useState<Profile | undefined>(undefined);
-  useEffect(() => {
-    fetch("/brand/expected_profile.csv")
-      .then((r) => (r.ok ? r.text() : Promise.reject()))
-      .then((txt) => {
-        const rows = txt.trim().split(/\r?\n/).slice(1)
-          .map((l) => l.split(",").map(Number))
-          .filter((r) => r.length >= 2 && !Number.isNaN(r[0]))
-          .map((r) => [r[0], r[1]] as [number, number]);
-        if (rows.length) setP(rows);
-      })
-      .catch(() => setP(undefined));
-  }, []);
-  return p;
 }
 
 // `h` is optional: a panel whose content is self-explanatory (the school mark)
@@ -75,7 +57,6 @@ export function App() {
   const [theme, toggleTheme] = useTheme();
   const [showPred, togglePred] = usePredictionToggle();
   const now = useClocks();
-  const profile = useProfile();
   const sponsors = useSponsors();
   const cfg = store.config;
   const ui = cfg.ui ?? {};
@@ -173,7 +154,7 @@ export function App() {
         <Panel h="Live Video" className="video-panel">
           <VideoPanel config={cfg} />
         </Panel>
-        <Panel h="Altitude · baro-average AGL vs expected profile" className="altitude-panel" stale={stale}>
+        <Panel className="altitude-panel" stale={stale}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 24, marginBottom: 8 }}>
             <Stat label="ALTITUDE AGL" size={52} unit="m"
               value={hasSrad ? fmt(s!.altitude_agl_m, 0) : "—"}
@@ -187,7 +168,7 @@ export function App() {
           {sradDs.status === "no_data" ? (
             <div className="awaiting" style={{ height: 200 }}>Awaiting telemetry</div>
           ) : (
-            <AltitudeChart store={store} profile={profile} height={200} dark={theme === "dark"} />
+            <AltitudeChart store={store} height={200} dark={theme === "dark"} />
           )}
           {hasSrad && s!.altitude_degraded && (
             <div className="mono" style={{ color: "var(--warn)", fontSize: 11, marginTop: 4 }}>
