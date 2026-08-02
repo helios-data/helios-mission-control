@@ -11,6 +11,9 @@ via the TelemetryPacket (runcam_power / runcam_recording, surfaced as
 srad.camera). A command record therefore only tracks whether we managed to
 publish it (SENT) or not (ERROR) — the operator watches srad.camera for the
 actual, rocket-reported result.
+
+The one exception is the VTX/RunCam power switch, which is resent on a timer
+until telemetry confirms it and marked FAILED if it never is (§4.7).
 """
 
 from __future__ import annotations
@@ -23,7 +26,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from .constants import IN_FLIGHT_STATES, RFD_CHOICES, RFD_FIELDS, RFD_RANGES
+from .constants import (
+    IN_FLIGHT_STATES,
+    RFD_CHOICES,
+    RFD_FIELDS,
+    RFD_RANGES,
+    VTX_ACK_TIMEOUT_S,
+    VTX_MAX_RETRIES,
+)
 from .hub import ConnectionHub
 from .state import MissionState
 
@@ -42,7 +52,13 @@ class CommandStatus(StrEnum):
     PENDING = "pending"            # record created, not yet published
     SENT = "sent"                  # published on the core / uplinked, awaiting confirmation
     ACKNOWLEDGED = "acknowledged"  # telemetry confirms the commanded state took effect
+    FAILED = "failed"              # uplinked and resent, never confirmed (VTX power only)
     ERROR = "error"                # publish failed or no publisher configured
+
+
+# Statuses that mean the command never took effect, so it must not count toward
+# the commanded camera state.
+_DEAD_STATUSES = (CommandStatus.FAILED, CommandStatus.ERROR)
 
 
 def _camera_matches(payload: dict[str, Any], cam: dict[str, Any]) -> bool:
@@ -120,6 +136,9 @@ class CommandManager:
         # Last *commanded* camera state (§4.7). This is what the operator asked
         # for; the confirmed state comes back over telemetry (srad.camera).
         self.camera_state = {"power": False, "recording": False}
+        # The in-flight VTX power resend loop, if any (at most one — see
+        # _start_vtx_retry).
+        self._vtx_retry: asyncio.Task[None] | None = None
 
     # ---- issue -----------------------------------------------------------
     async def issue(
@@ -152,6 +171,8 @@ class CommandManager:
                 rec.status = CommandStatus.ERROR
                 rec.message = str(exc)
         await self.hub.broadcast(rec.frame())
+        if rec.status is CommandStatus.SENT and cmd_type == "camera" and "power" in payload:
+            self._start_vtx_retry(rec)
         return rec
 
     def _check_interlocks(self, cmd_type: str, payload: dict[str, Any], override: bool) -> None:
@@ -179,6 +200,102 @@ class CommandManager:
     def history(self) -> list[dict[str, Any]]:
         return [r.frame() for r in sorted(self.records.values(), key=lambda r: r.command_id)]
 
+    # ---- VTX power resend (§4.7) -----------------------------------------
+    def _vtx_retry_config(self) -> tuple[float, int]:
+        """``(ack timeout seconds, max retries)`` from config, else the defaults.
+
+        Read per command rather than cached at startup, so an admin config edit
+        takes effect on the next press.
+        """
+        block = self.state.config.get("commands") or {}
+        cfg = block.get("vtx_power") or {}
+        try:
+            timeout = float(cfg.get("ack_timeout_seconds", VTX_ACK_TIMEOUT_S))
+        except (TypeError, ValueError):
+            timeout = VTX_ACK_TIMEOUT_S
+        try:
+            retries = int(cfg.get("max_retries", VTX_MAX_RETRIES))
+        except (TypeError, ValueError):
+            retries = VTX_MAX_RETRIES
+        # A sub-50ms timeout would be a resend storm on a link that runs at ~4 Hz.
+        return max(0.05, timeout), max(0, retries)
+
+    def _start_vtx_retry(self, rec: CommandRecord) -> None:
+        """Watch a published VTX power command and resend it until it's confirmed.
+
+        At most one watcher: a newer power command supersedes the older one, and
+        resending a command the operator has since reversed would fight the
+        switch they just flipped.
+        """
+        if self._vtx_retry is not None:
+            self._vtx_retry.cancel()
+        self._vtx_retry = asyncio.create_task(
+            self._retry_vtx_power(rec), name=f"vtx-power-retry-{rec.command_id}"
+        )
+
+    async def _retry_vtx_power(self, rec: CommandRecord) -> None:
+        """Resend `rec` every timeout until telemetry confirms it, then fail it.
+
+        observe_srad flips the record to ACKNOWLEDGED the moment srad.camera
+        reports the requested state, which is what ends this loop — so the record
+        is the shared signal and there is no separate ack event to wait on. Giving
+        up reverts the commanded camera state (the button snaps back), because a
+        switch showing ON that the rocket never received is worse than one showing
+        the truth.
+        """
+        timeout, max_retries = self._vtx_retry_config()
+        for attempt in range(1, max_retries + 1):
+            await asyncio.sleep(timeout)
+            if rec.status is not CommandStatus.SENT:
+                return  # confirmed by telemetry, or already dead
+            if self.publish_fn is None:
+                break
+            try:
+                await self.publish_fn(rec.command_id, rec.type, rec.payload)
+            except Exception as exc:  # noqa: BLE001 - surface any transport error to the operator
+                rec.status = CommandStatus.ERROR
+                rec.message = f"resend {attempt} failed: {exc}"
+                self._recompute_camera_state()
+                await self.hub.broadcast(rec.frame())
+                return
+            log.warning(
+                "VTX power command %d unconfirmed; resent %d/%d",
+                rec.command_id, attempt, max_retries,
+            )
+            rec.message = f"no confirmation — resent {attempt}/{max_retries}"
+            await self.hub.broadcast(rec.frame())
+
+        # The last resend gets the same window as every other one before we quit.
+        await asyncio.sleep(timeout)
+        if rec.status is not CommandStatus.SENT:
+            return
+        rec.status = CommandStatus.FAILED
+        rec.message = (
+            f"no telemetry confirmation after {max_retries} "
+            f"{'retry' if max_retries == 1 else 'retries'}"
+        )
+        self._recompute_camera_state()
+        log.error("VTX power command %d failed: %s", rec.command_id, rec.message)
+        await self.hub.broadcast(rec.frame())
+
+    def _recompute_camera_state(self) -> None:
+        """Rebuild the commanded camera state by replaying the commands that stuck.
+
+        A FAILED/ERROR command never reached the rocket, so dropping it and
+        replaying the rest lands on what the last surviving command asked for —
+        rather than a hardcoded default, or the state the dead command optimist-
+        ically applied when it was issued. MissionStore.recomputeCameraState
+        mirrors this rule on the frontend; keep the two in sync.
+        """
+        rebuilt = {"power": False, "recording": False}
+        for rec in sorted(self.records.values(), key=lambda r: r.command_id):
+            if rec.type != "camera" or rec.status in _DEAD_STATUSES:
+                continue
+            for key in _CAMERA_KEYS:
+                if key in rec.payload:
+                    rebuilt[key] = bool(rec.payload[key])
+        self.camera_state.update(rebuilt)
+
     # ---- telemetry-driven acknowledgement --------------------------------
     def observe_srad(self, frame: dict[str, Any]) -> None:
         """Flip SENT camera commands to ACKNOWLEDGED when telemetry confirms them.
@@ -187,6 +304,11 @@ class CommandManager:
         CommandAck, so we watch the telemetry stream: a published camera command is
         acknowledged once srad.camera reflects its requested state. Called from a
         MissionState sink on the running loop, so we can schedule the WS re-broadcast.
+
+        Only SENT records are eligible, which makes FAILED terminal: once we've
+        given up and snapped the switch back, a late-arriving frame must not
+        silently flip the log green and move the button again under the operator.
+        The live truth is the `confirmed` pill, which reads srad.camera directly.
         """
         cam = frame.get("camera")
         if not cam:

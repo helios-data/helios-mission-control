@@ -98,6 +98,17 @@ RFD_CONFIG_FIELDS: tuple[str, ...] = (
     "min_freq_khz", "max_freq_khz", "net_id", "tx_power_dbm", "air_speed_kbps", "num_channels",
 )
 
+# --- VTX/RunCam power uplink retry (§4.7) ------------------------------------
+# The camera power command goes up over RF and is confirmed only by FALCON
+# echoing runcam_power back in telemetry, so one dropped uplink packet leaves the
+# VTX in the wrong state with nothing to notice it. Resend on a timer until
+# telemetry agrees, then stop and mark the command failed rather than leaving a
+# `sent` record that never resolves. Overridable per mission under
+# config["commands"]["vtx_power"]; only the power switch is retried, since it's
+# the one that decides whether the stream has a picture at all.
+VTX_ACK_TIMEOUT_S = 1.0   # wait this long for telemetry before resending
+VTX_MAX_RETRIES = 10      # resends after the initial uplink, then give up
+
 # --- Unit conversions (mirror the rest of the codebase, §1.2) ---
 FT_TO_M = 0.3048
 KNOTS_TO_MS = 0.514444

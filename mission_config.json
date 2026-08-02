@@ -19,6 +19,12 @@
     "sponsor_rotate_seconds": 10,
     "video_url": "http://localhost:1984/api/webrtc?src=cloudburst"
   },
+  "commands": {
+    "vtx_power": {
+      "ack_timeout_seconds": 1,
+      "max_retries": 10
+    }
+  },
   "map": {
     "tile_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     "user_agent": "helios-mission-control/0.1 (UBC Rocket)",

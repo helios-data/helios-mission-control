@@ -28,6 +28,13 @@ function CameraControls({ store, operator }: { store: MissionStore; operator: st
   // Recording is allowed only when the camera has power (confirmed if we have
   // telemetry, otherwise the commanded state).
   const powerOn = confirmed ? confirmed.power : commanded.power;
+  // Latest VTX power command. The backend resends it until telemetry confirms it
+  // and marks it failed once the retries run out (CommandManager._retry_vtx_power),
+  // so this is where "we're still trying" and "we gave up and moved the switch
+  // back" get reported — otherwise both look identical to a quiet console.
+  const lastPower = store.acks
+    .filter((a) => a.command_type === "camera" && "power" in a.payload)
+    .at(-1) ?? null;
 
   // Debounce: disable both buttons for 1s after a press so they can't be spammed.
   const [cooling, setCooling] = useState(false);
@@ -81,6 +88,19 @@ function CameraControls({ store, operator }: { store: MissionStore; operator: st
           {commanded.recording ? "REC" : "OFF"}
         </button>
       </div>
+
+      {lastPower?.status === "sent" && lastPower.message && (
+        <div className="faint mono" style={{ fontSize: 10 }}>
+          VTX power #{lastPower.command_id}: {lastPower.message}
+        </div>
+      )}
+
+      {lastPower?.status === "failed" && (
+        <div className="errbox">
+          ✗ VTX power #{lastPower.command_id} — {lastPower.message}. Switch reset to the
+          last confirmed state; press again to retry.
+        </div>
+      )}
 
       {!powerOn && (
         <div className="faint" style={{ fontSize: 10 }}>

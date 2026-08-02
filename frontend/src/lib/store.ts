@@ -291,11 +291,25 @@ export class MissionStore {
     const idx = this.acks.findIndex((a) => a.command_id === f.command_id);
     if (idx >= 0) this.acks[idx] = f;
     else this.acks = [...this.acks, f];
-    if (f.command_type === "camera") {
+    if (f.command_type === "camera") this.recomputeCameraState();
+  }
+
+  // Commanded camera state = every camera command that stuck, replayed in order.
+  // Derived on each ack rather than accumulated, because a status can go
+  // backwards: the VTX power uplink is resent until telemetry confirms it and
+  // then marked "failed", at which point the command must stop counting and the
+  // button snap back to the last state that did stick. Mirrors
+  // CommandManager._recompute_camera_state on the backend; keep the two in sync.
+  private recomputeCameraState() {
+    const rebuilt = { power: false, recording: false };
+    for (const a of this.acks) {
+      if (a.command_type !== "camera") continue;
+      if (a.status === "failed" || a.status === "error") continue;
       for (const k of ["power", "recording"] as const) {
-        if (k in f.payload) this.cameraState[k] = Boolean(f.payload[k]);
+        if (k in a.payload) rebuilt[k] = Boolean(a.payload[k]);
       }
     }
+    this.cameraState = rebuilt;
   }
 
   // ---- React binding ----

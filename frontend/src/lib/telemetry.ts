@@ -162,6 +162,11 @@ export interface MissionFrame {
 // once published, then flips to "acknowledged" when telemetry (srad.camera)
 // confirms the commanded state took effect. "error" = publish failed. RFD config
 // is ground-local (no telemetry confirmation), so it stays "sent".
+//
+// "failed" is VTX power only: that command is resent every
+// commands.vtx_power.ack_timeout_seconds until telemetry confirms it, and marked
+// failed after max_retries resends — at which point it stops counting toward the
+// commanded camera state (see MissionStore.recomputeCameraState).
 export interface AckFrame {
   type: "ack";
   command_id: number;
@@ -169,7 +174,7 @@ export interface AckFrame {
   payload: Record<string, unknown>;
   operator: string;
   issued_at: number;
-  status: "pending" | "sent" | "acknowledged" | "error";
+  status: "pending" | "sent" | "acknowledged" | "failed" | "error";
   message: string;
 }
 
