@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -72,15 +73,19 @@ async def patch_config(req: Request, patch: ConfigPatch) -> dict[str, Any]:
 
 
 # ---- packet logging ------------------------------------------------------
-# There is no one-shot "log now" endpoint: snapshotting a single packet was
-# removed at Jason's request (2026-08-02). Continuous Record is the only capture
-# path, which also means every logged packet comes from one code path.
+# Continuous capture only (no one-shot snapshot — removed 2026-08-02). The admin
+# "Log now" control uses source="combined": SRAD + APRS + ground NMEA into one
+# file. The per-source keys remain valid for anything that wants a single stream.
+RecordSource = Literal["srad", "cots", "ground", "combined"]
+RECORD_SOURCES = ("srad", "cots", "ground", "combined")
+
+
 class RecordBody(BaseModel):
     action: Literal["start", "stop"]
 
 
 @router.post("/record/{source}")
-async def record(req: Request, source: Literal["srad", "cots"], body: RecordBody) -> dict[str, Any]:
+async def record(req: Request, source: RecordSource, body: RecordBody) -> dict[str, Any]:
     logger = req.app.state.logger
     if body.action == "start":
         return logger.start_recording(source)
@@ -90,7 +95,7 @@ async def record(req: Request, source: Literal["srad", "cots"], body: RecordBody
 @router.get("/record")
 async def record_status(req: Request) -> dict[str, Any]:
     logger = req.app.state.logger
-    return {s: logger.recording_status(s) for s in ("srad", "cots")}
+    return {s: logger.recording_status(s) for s in RECORD_SOURCES}
 
 
 @router.get("/logs")
@@ -128,6 +133,44 @@ async def post_command(req: Request, body: CommandBody) -> dict[str, Any]:
 async def command_history(req: Request) -> dict[str, Any]:
     return {"commands": req.app.state.commands.history(),
             "camera_state": req.app.state.commands.camera_state}
+
+
+# ---- landing-predictor config (wind override) ----------------------------
+class LandingConfigBody(BaseModel):
+    wind_source_mode: Literal["live", "manual"]
+    wind_speed_ms: float = 0.0
+    wind_dir_deg: float = 0.0
+    operator: str = "operator"
+
+
+@router.post("/landing/config")
+async def landing_config(req: Request, body: LandingConfigBody) -> dict[str, Any]:
+    """Set the wind override for Helios.Services.LandingPredictor.
+
+    Stores the mode locally (so a reloading client sees it) and publishes a
+    LandingConfig to the predictor when a publisher is wired (LIVE mode). In
+    STANDALONE there is no publisher — the synthetic predictor reads the stored
+    override directly — so the call still succeeds and the sim reflects it.
+    """
+    state = _mission(req)
+    payload: dict[str, Any] = {
+        "wind_source_mode": body.wind_source_mode,
+        "wind_speed_ms": body.wind_speed_ms,
+        "wind_dir_deg": body.wind_dir_deg,
+        "operator": body.operator,
+        "issued_at_ms": int(time.time() * 1000),
+    }
+    frame = state.set_landing_config(payload)
+
+    publish = getattr(req.app.state, "landing_publish", None)
+    if publish is not None:
+        try:
+            await publish(payload)
+        except Exception as exc:  # noqa: BLE001 - surface the transport error to the operator
+            raise HTTPException(502, f"failed to publish landing config: {exc}") from exc
+
+    await req.app.state.hub.broadcast(frame)
+    return frame
 
 
 # ---- map tiles (offline-caching proxy) -----------------------------------

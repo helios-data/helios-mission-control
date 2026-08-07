@@ -101,3 +101,18 @@
 .cam-unknown { color: var(--text-dim); opacity: 0.6; }
 .warnbox { border: 1px solid var(--warn); background: #ffb02010; color: var(--warn);
   padding: 6px 8px; border-radius: 3px; font-size: 11px; margin-top: 6px; }
+
+/* Manual wind override in the Landing Prediction panel. */
+.wind-override { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px;
+  display: flex; flex-direction: column; gap: 6px; }
+.wind-override-head { display: flex; align-items: center; justify-content: space-between; }
+.wind-override .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.wind-override .seg button { border: 0; border-radius: 0; padding: 2px 8px; font-size: 10px;
+  letter-spacing: 0.06em; background: var(--bg-elev); color: var(--text-dim); cursor: pointer; }
+.wind-override .seg button.on { background: color-mix(in srgb, var(--accent-cyan) 16%, transparent);
+  color: var(--accent-cyan); }
+.wind-override-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px 8px; align-items: end; }
+.wind-override-form label { display: flex; flex-direction: column; gap: 2px; font-size: 9px;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.wind-override-form input { width: 100%; min-width: 0; }
+.wind-override-form .wind-apply { padding: 3px 10px; font-size: 10px; }

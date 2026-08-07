@@ -18,7 +18,7 @@ export const api = {
   patchConfig: (patch: Record<string, unknown>) =>
     req("/api/config", { method: "PATCH", body: JSON.stringify(patch) }),
 
-  record: (source: "srad" | "cots", action: "start" | "stop") =>
+  record: (source: "srad" | "cots" | "ground" | "combined", action: "start" | "stop") =>
     req(`/api/record/${source}`, { method: "POST", body: JSON.stringify({ action }) }),
   recordStatus: () => req<Record<string, { recording: boolean; count?: number }>>("/api/record"),
   listLogs: () => req<{ files: { name: string; size: number; mtime: number }[] }>("/api/logs"),
@@ -29,6 +29,13 @@ export const api = {
       body: JSON.stringify({ type, payload, operator, override }),
     }),
   commands: () => req<{ commands: unknown[]; camera_state: Record<string, boolean> }>("/api/commands"),
+
+  landingConfig: (payload: {
+    wind_source_mode: "live" | "manual";
+    wind_speed_ms?: number;
+    wind_dir_deg?: number;
+    operator?: string;
+  }) => req("/api/landing/config", { method: "POST", body: JSON.stringify(payload) }),
 
   clock: (action: "arm" | "reset" | "liftoff", seconds = 0) =>
     req("/api/clock", { method: "POST", body: JSON.stringify({ action, seconds }) }),

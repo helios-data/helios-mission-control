@@ -163,21 +163,40 @@ class SyntheticFlight:
                     "sats": 12, "fix": 3},
         }
 
-    def landing_prediction(self) -> dict[str, Any] | None:
+    def landing_prediction(
+        self, wind_override: tuple[float, float] | None = None
+    ) -> dict[str, Any] | None:
         """A synthetic LandingPrediction frame (mirrors telemetry.normalize_landing).
 
         Returns None until the rocket is past apogee — the sim only estimates a
         touchdown once descending (DROGUE/MAIN/LANDED). The predicted point sits
         downwind of the pad and its 50/90% ellipses + dispersion cloud tighten as
         the rocket descends, matching what the real LandingPredictor node publishes.
+
+        ``wind_override`` is ``(speed_ms, from_deg)`` — a manual wind the operator
+        set via LandingConfig, met convention (direction it comes FROM). When set,
+        the estimate uses it and the frame reports ``wind_source = "manual"``;
+        otherwise it uses the model's nominal live wind. This is what closes the
+        override loop in STANDALONE (the real predictor does the same over RF).
         """
         if self.phase not in _POST_APOGEE_PHASES:
             return None
 
+        if wind_override is not None:
+            wind_speed, wind_from_deg = wind_override
+            # Internally we work in the "toward" bearing the wind pushes the rocket.
+            wind_toward_deg = (wind_from_deg + 180.0) % 360.0
+            wind_mode = "manual"
+        else:
+            wind_speed = _PRED_WIND_SPEED_MS
+            wind_toward_deg = _PRED_WIND_BEARING_DEG
+            wind_from_deg = (wind_toward_deg + 180.0) % 360.0
+            wind_mode = "live"
+
         remaining = max(0.0, self.alt_agl)
         time_aloft = remaining / _PRED_DESCENT_RATE_MS
-        drift_m = _PRED_WIND_SPEED_MS * time_aloft
-        br = math.radians(_PRED_WIND_BEARING_DEG)
+        drift_m = wind_speed * time_aloft
+        br = math.radians(wind_toward_deg)
         m_per_deg_lat = 111320.0
         m_per_deg_lon = 111320.0 * math.cos(math.radians(self.base_lat))
 
@@ -224,7 +243,9 @@ class SyntheticFlight:
             "current_lat": round(self.base_lat + self.alt_agl * 1.5e-6, 6),
             "current_lon": round(self.base_lon + self.alt_agl * 1.0e-6, 6),
             "current_source": "srad",
-            "wind_source": "live",
+            "wind_source": wind_mode,
+            "wind_speed_ms": round(wind_speed, 1),
+            "wind_dir_deg": round(wind_from_deg, 1),
             "descent_model": "constant",
             "current_alt_agl": round(remaining, 2),
             "flight_state": float(FLIGHT_STATES.index(self.phase)) if self.phase in FLIGHT_STATES else -1.0,

@@ -61,6 +61,7 @@ export function App() {
         <span className="mono" style={{ fontSize: 11, color: store.connected ? "var(--ok)" : "var(--err)" }}>
           {store.connected ? "WS ●" : "WS ○"}
         </span>
+        <LogNowButton />
         <AudioToggle on={audioOn} onToggle={toggleAudio} />
         <ThemeToggle theme={theme} onToggle={toggleTheme} />
       </header>
@@ -71,6 +72,42 @@ export function App() {
         <ConfigTab />
       )}
     </div>
+  );
+}
+
+// One capture control for the whole console: starts/stops a combined recording
+// of SRAD + APRS + ground NMEA into a single log file. Syncs its state from the
+// server on mount so a page reload reflects a recording already in progress.
+function LogNowButton() {
+  const [recording, setRecording] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.recordStatus()
+      .then((s) => setRecording(!!s.combined?.recording))
+      .catch(() => { /* server may not be up yet; default to not recording */ });
+  }, []);
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <button
+        className={recording ? "rec" : ""}
+        disabled={busy}
+        title="Record SRAD + APRS + ground NMEA into one combined log file"
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await api.record("combined", recording ? "stop" : "start");
+            setRecording((r) => !r);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {recording ? "● Logging — Stop" : "Log now"}
+      </button>
+      <a href="/api/logs" target="_blank" rel="noreferrer">
+        <button>Logs ▾</button>
+      </a>
+    </span>
   );
 }
 
@@ -320,11 +357,94 @@ function LandingPredictionPanel() {
           <StatCell label="Remaining" value={downrange} sub="to landing" />
           <StatCell label="90% zone" value={zone} color={lp.final ? "var(--ok)" : undefined} />
           <StatCell label="Descent alt" value={lp.current_alt_agl != null ? `${fmt(lp.current_alt_agl, 0)} m` : "—"} />
-          <StatCell label="Model" value={lp.descent_model ?? "—"} sub={`wind ${lp.wind_source ?? "—"}`} />
+          <StatCell
+            label="Wind"
+            value={lp.wind_speed_ms != null ? `${fmt(lp.wind_speed_ms, 1)} m/s` : "—"}
+            sub={windSub(lp.wind_dir_deg, lp.wind_source)}
+            color={lp.wind_source === "manual" ? "var(--warn)" : undefined}
+          />
           <StatCell label="Source" value={(lp.current_source ?? "—").toUpperCase()} sub={`pkt ${lp.based_on_packet_counter}`} />
         </div>
       )}
+      <WindOverride />
     </Panel>
+  );
+}
+
+// "from 245° SW · live" — the met direction the wind comes from plus its source.
+function windSub(dirDeg: number | null | undefined, source: string | null): string {
+  const src = source ?? "—";
+  if (dirDeg == null) return `wind ${src}`;
+  return `from ${fmt(dirDeg, 0)}° ${compass(dirDeg)} · ${src}`;
+}
+
+function compass(deg: number): string {
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return dirs[Math.round((((deg % 360) + 360) % 360) / 45) % 8];
+}
+
+// Manual wind override for the landing predictor. Toggling MANUAL sends the
+// entered wind (speed + met FROM direction) as a LandingConfig to the predictor
+// (POST /api/landing/config); LIVE hands wind selection back to it. The current
+// mode is read from the store so a reloaded console reflects an active override.
+function WindOverride() {
+  const cfg = store.landingConfig;
+  const manual = cfg?.wind_source_mode === "manual";
+  const [speed, setSpeed] = useState("6");
+  const [dir, setDir] = useState("245");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Seed the inputs from an override the server already has (e.g. after reload).
+  useEffect(() => {
+    if (cfg?.wind_source_mode === "manual") {
+      setSpeed(String(cfg.wind_speed_ms));
+      setDir(String(cfg.wind_dir_deg));
+    }
+  }, [cfg?.wind_source_mode, cfg?.wind_speed_ms, cfg?.wind_dir_deg]);
+
+  async function send(mode: "live" | "manual") {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.landingConfig(
+        mode === "manual"
+          ? { wind_source_mode: "manual", wind_speed_ms: Number(speed), wind_dir_deg: Number(dir) }
+          : { wind_source_mode: "live" },
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const badInput = manual && (!Number.isFinite(Number(speed)) || !Number.isFinite(Number(dir)));
+
+  return (
+    <div className="wind-override">
+      <div className="wind-override-head">
+        <span className="rs-label">Wind override</span>
+        <div className="seg">
+          <button className={!manual ? "on" : ""} disabled={busy} onClick={() => send("live")}>LIVE</button>
+          <button className={manual ? "on" : ""} disabled={busy} onClick={() => send("manual")}>MANUAL</button>
+        </div>
+      </div>
+      {manual && (
+        <div className="wind-override-form">
+          <label>
+            Speed (m/s)
+            <input type="number" step="0.1" min="0" value={speed} onChange={(e) => setSpeed(e.target.value)} />
+          </label>
+          <label>
+            From (° true)
+            <input type="number" step="1" min="0" max="360" value={dir} onChange={(e) => setDir(e.target.value)} />
+          </label>
+          <button className="wind-apply" disabled={busy || badInput} onClick={() => send("manual")}>Apply</button>
+        </div>
+      )}
+      {err && <div className="rfd-err" style={{ color: "var(--err)", fontSize: 10 }}>{err}</div>}
+    </div>
   );
 }
 

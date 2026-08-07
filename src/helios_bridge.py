@@ -31,6 +31,8 @@ COTS_EVENT = "aprs"
 # Landing predictor (separate Helios node; optional — may not be running).
 LANDING_ADDRESS = "Helios.Services.LandingPredictor"
 LANDING_EVENT = "landing_prediction"
+# Operator wind override we publish *to* the predictor (it subscribes to this).
+LANDING_COMMAND_EVENT = "landing_config"
 # Ground-station GNSS receiver (separate Helios node; optional). Publishes an
 # NmeaSentence per decoded sentence, so this streams continuously and the ground
 # station's position tracks it live. Without it, the configured coordinates stand.
@@ -435,6 +437,32 @@ class HeliosBridge:
             cmd.camera = cam
         await self.client.publish_event(
             event_name="command", data=bytes(cmd), override_address=SRAD_ADDRESS,
+        )
+
+    async def publish_landing_config(self, payload: dict[str, Any]) -> None:
+        """Serialize a LandingConfig and publish it to the LandingPredictor node.
+
+        The predictor subscribes to `landing_config` on its own address; today the
+        only field that matters is the wind override (mode + manual speed/dir).
+        Requires `make protos` to have compiled protos-proposed/landing_prediction.proto.
+        """
+        try:
+            from src.generated import LandingConfig  # noqa: PLC0415 - lazy by design
+        except ImportError as exc:
+            raise RuntimeError(
+                "LandingConfig proto not compiled; run `make protos` "
+                "(protos-proposed/landing_prediction.proto)"
+            ) from exc
+
+        cfg = LandingConfig(
+            issued_at_ms=int(payload.get("issued_at_ms", 0)),
+            operator=str(payload.get("operator", "")),
+            wind_source_mode=str(payload.get("wind_source_mode", "live")),
+            wind_speed_ms=float(payload.get("wind_speed_ms") or 0.0),
+            wind_dir_deg=float(payload.get("wind_dir_deg") or 0.0),
+        )
+        await self.client.publish_event(
+            event_name=LANDING_COMMAND_EVENT, data=bytes(cfg), override_address=LANDING_ADDRESS,
         )
 
     async def _housekeeping(self) -> None:

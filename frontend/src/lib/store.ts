@@ -7,7 +7,7 @@
 import { useSyncExternalStore } from "react";
 import type {
   AckFrame, CotsFrame, EventType, Frame, GroundFrame, GroundPosition, GroundStation,
-  LinkFrame, NmeaFixQuality,
+  LandingConfigFrame, LinkFrame, NmeaFixQuality,
   MissionConfig, MissionEvent, MissionFrame, PredictionFrame, RfdConfigFrame, SradFrame,
 } from "./telemetry";
 import { EVENT_META } from "./eventmeta";
@@ -38,6 +38,8 @@ export class MissionStore {
   link: LinkFrame | null = null;
   mission: MissionFrame | null = null;
   landing: PredictionFrame | null = null;
+  // Current operator wind override for the landing predictor (null = none set).
+  landingConfig: LandingConfigFrame | null = null;
   // Latest NMEA sentence from the ground receiver (Helios.Services.GroundGPS),
   // of any type — for showing what just arrived. Kept even with no fix, so the
   // UI can distinguish "receiver not locked" from "node not running".
@@ -73,6 +75,12 @@ export class MissionStore {
   cotsTrack: [number, number][] = [];
   private _t0ms: number | null = null;
   private _lastCotsAlt: number | null = null;
+  // True when a new COTS altitude has arrived since the last SRAD tick. The COTS
+  // series shares the SRAD timebase but APRS is far slower, so we plot the real
+  // COTS point only on the tick it arrives and null in between; with spanGaps the
+  // chart draws a straight line between adjacent COTS points instead of the
+  // staircase that re-pushing the held value on every tick produced.
+  private _cotsFresh = false;
 
   private ws: WebSocket | null = null;
   private version = 0;
@@ -118,6 +126,12 @@ export class MissionStore {
     }
     if (cotsItems.length) this.cots = cotsItems.at(-1)!;
     for (const f of sradItems) this._pushSradSeries(f);
+    // Backfilled ticks carry null COTS (we can't align sparse APRS to each SRAD
+    // frame after the fact); anchor the last-known COTS altitude at the newest
+    // tick so a mid-flight join starts its COTS line from a real point.
+    if (cotsItems.length && this._lastCotsAlt !== null && this.alt.cots.length) {
+      this.alt.cots[this.alt.cots.length - 1] = this._lastCotsAlt;
+    }
     if (sradItems.length) this.srad = sradItems.at(-1)!;
     this.bump();
   }
@@ -154,6 +168,7 @@ export class MissionStore {
         if (f.srad) this.ingestSrad(f.srad);
         if (f.cots) this.ingestCots(f.cots);
         if (f.prediction) this.landing = f.prediction;
+        if (f.landing_config) this.landingConfig = f.landing_config;
         if (f.rfd_config) this.rfdConfig = f.rfd_config;
         if (f.ground) this.ingestGround(f.ground);
         break;
@@ -162,6 +177,7 @@ export class MissionStore {
       case "link": this.link = f; break;
       case "mission": this.setMission(f); break;
       case "prediction": this.landing = f; break;
+      case "landing_config": this.landingConfig = f; break;
       case "rfd_config": this.rfdConfig = f; break;
       case "ground": this.ingestGround(f); break;
       case "config": { const { type, ...rest } = f; this.config = rest; break; }
@@ -247,7 +263,10 @@ export class MissionStore {
     push(this.alt.x, x, MAX_POINTS);
     push(this.alt.baroAvg, f.altitude_agl_m, MAX_POINTS);
     push(this.alt.kf, (f.kf_altitude ?? 0) - (f.ground_altitude ?? 0), MAX_POINTS);
-    push(this.alt.cots, this._lastCotsAlt, MAX_POINTS);
+    // Only anchor a COTS vertex on the tick a fresh APRS altitude arrived; null
+    // otherwise so the chart connects real points rather than stepping.
+    push(this.alt.cots, this._cotsFresh ? this._lastCotsAlt : null, MAX_POINTS);
+    this._cotsFresh = false;
     if (hasGpsFix(f.gps.lon, f.gps.lat)) {
       push(this.sradTrack, [f.gps.lon, f.gps.lat] as [number, number], MAX_TRACK);
     }
@@ -260,6 +279,7 @@ export class MissionStore {
       // COTS altitude is MSL-ish (ft->m); show AGL against ground_altitude.
       const ground = this.groundStation().alt_m ?? this.srad?.ground_altitude ?? 0;
       this._lastCotsAlt = p.altitude_m - ground;
+      this._cotsFresh = true; // plot this point on the next SRAD tick
     }
     if (hasGpsFix(p?.lon, p?.lat)) {
       push(this.cotsTrack, [p!.lon!, p!.lat!] as [number, number], MAX_TRACK);

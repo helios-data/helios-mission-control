@@ -121,6 +121,23 @@ export interface PredictionFrame {
   current_alt_agl: number | null;
   flight_state: number | null;
   status: string | null; // "not_descending" | "predicting" | "final"
+  // Actual wind feeding the estimate: speed (m/s) + met direction it comes FROM
+  // (deg true). Null until the predictor publishes them; "manual" values echo an
+  // operator override (see LandingConfigFrame).
+  wind_speed_ms: number | null;
+  wind_dir_deg: number | null;
+}
+
+// Operator wind override sent to Helios.Services.LandingPredictor, echoed back on
+// the `landing_config` event so every client (and a reloading one, via snapshot)
+// reflects the current mode. Mirrors LandingConfig in the proto + POST /api/landing/config.
+export interface LandingConfigFrame {
+  type: "landing_config";
+  issued_at_ms: number;
+  operator: string;
+  wind_source_mode: "live" | "manual";
+  wind_speed_ms: number;
+  wind_dir_deg: number;
 }
 
 export interface Transition {
@@ -269,6 +286,7 @@ export interface SnapshotFrame {
   srad: SradFrame | null;
   cots: CotsFrame | null;
   prediction: PredictionFrame | null;
+  landing_config: LandingConfigFrame | null;
   rfd_config: RfdConfigFrame | null;
   ground: GroundFrame | null;
 }
@@ -280,6 +298,7 @@ export type Frame =
   | MissionFrame
   | AckFrame
   | PredictionFrame
+  | LandingConfigFrame
   | RfdConfigFrame
   | GroundFrame
   | SnapshotFrame

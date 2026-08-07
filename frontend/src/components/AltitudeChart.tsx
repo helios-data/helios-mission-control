@@ -92,7 +92,9 @@ export function AltitudeChart({
         { label: "t+ (s)" },
         { label: "Baro avg AGL", stroke: SERIES.baroAvg, width: 2, points: { show: false } },
         { label: "Kalman", stroke: SERIES.kf, width: 1, points: { show: false } },
-        { label: "COTS AGL", stroke: SERIES.cots, width: 1.5, points: { show: false } },
+        // spanGaps: the COTS series is null between the sparse APRS packets, so
+        // this bridges those gaps with a straight line between adjacent points.
+        { label: "COTS AGL", stroke: SERIES.cots, width: 1.5, points: { show: false }, spanGaps: true },
       ],
     };
     const plot = new uPlot(opts, [[], [], [], []], ref.current);

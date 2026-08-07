@@ -133,6 +133,9 @@ class MissionState:
         self.srad_latest: dict[str, Any] | None = None
         self.cots_latest: dict[str, Any] | None = None
         self.landing_latest: dict[str, Any] | None = None
+        # Operator wind override sent to the LandingPredictor (see set_landing_config).
+        # Held so a reloading admin re-reads the current mode from the snapshot.
+        self.landing_config: dict[str, Any] | None = None
         # Latest NMEA sentence from the ground receiver, of any type.
         self.ground_latest: dict[str, Any] | None = None
         # Accumulated last-known-good position, built up across sentence types
@@ -236,6 +239,17 @@ class MissionState:
         self.landing_link.mark()
         self._emit("landing", pred)
         return pred
+
+    def set_landing_config(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        """Record the operator's wind override and return the broadcastable frame.
+
+        Stored so a client that reloads mid-flight re-reads the current mode from
+        the full snapshot; the actual wind then comes back on the prediction
+        stream (the predictor, or the STANDALONE sim, echoes it).
+        """
+        frame = {"type": "landing_config", **cfg}
+        self.landing_config = frame
+        return frame
 
     def ingest_ground(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Fold one NMEA sentence into the accumulated ground-station fix.
@@ -435,6 +449,7 @@ class MissionState:
             "srad": self.srad_latest,
             "cots": self.cots_latest,
             "prediction": self.landing_latest,
+            "landing_config": self.landing_config,
             "rfd_config": self.rfd_config_latest,
             "ground": self.ground_latest,
         }

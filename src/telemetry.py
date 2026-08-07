@@ -169,6 +169,11 @@ def normalize_landing(pkt: object) -> dict[str, Any]:
         "current_alt_agl": _num(pkt, "current_alt_agl"),
         "flight_state": _num(pkt, "flight_state"),
         "status": _get(pkt, "status"),
+        # Actual wind feeding the estimate (m/s and the met direction it comes
+        # from). None until the predictor publishes them; see LandingConfig for
+        # the manual override that sets them.
+        "wind_speed_ms": _num(pkt, "wind_speed_ms"),
+        "wind_dir_deg": _num(pkt, "wind_dir_deg"),
     }
 
 

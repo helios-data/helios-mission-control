@@ -41,6 +41,21 @@ STANDALONE_RFD_CONFIG: dict[str, int] = {
 }
 
 
+def _wind_override(state: MissionState) -> tuple[float, float] | None:
+    """`(speed_ms, from_deg)` when the operator set a manual wind, else None.
+
+    Reads the override MissionState stored from POST /api/landing/config, so the
+    synthetic predictor honors it exactly as the real LandingPredictor would.
+    """
+    cfg = state.landing_config
+    if not cfg or cfg.get("wind_source_mode") != "manual":
+        return None
+    try:
+        return float(cfg.get("wind_speed_ms") or 0.0), float(cfg.get("wind_dir_deg") or 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _rfd_config_frame(cfg: dict[str, Any]) -> dict[str, Any]:
     """Build a `current_rfd_config` frame, matching telemetry.normalize_rfd_config."""
     return {
@@ -143,7 +158,7 @@ async def run_standalone(
             await hub.broadcast(state.ingest_ground(flight.ground_frame()))
 
         if tick % pred_period_ticks == 0:
-            pred = flight.landing_prediction()
+            pred = flight.landing_prediction(_wind_override(state))
             if pred is not None:
                 await hub.broadcast(state.ingest_landing(pred))
 

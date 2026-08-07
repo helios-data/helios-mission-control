@@ -1,30 +1,11 @@
-import { useState } from "react";
 import { Panel } from "../components/Panel";
 import { SignalIndicator } from "../components/SignalDot";
-import { api } from "../lib/api";
 import type { DataState } from "../lib/fallback";
 import type { CotsFrame, SradFrame } from "../lib/telemetry";
 import { fmt, fmtInt, fmtLatLon } from "../lib/units";
 
-function LogControls({ source }: { source: "srad" | "cots" }) {
-  const [recording, setRecording] = useState(false);
-  return (
-    <div className="row-actions">
-      <button
-        className={recording ? "rec" : ""}
-        onClick={async () => {
-          await api.record(source, recording ? "stop" : "start");
-          setRecording(!recording);
-        }}
-      >
-        {recording ? "● Recording — Stop" : "Record"}
-      </button>
-      <a href={`/api/logs`} target="_blank" rel="noreferrer">
-        <button>Logs ▾</button>
-      </a>
-    </div>
-  );
-}
+// Packet capture is no longer per-panel: a single "Log now" control in the admin
+// header records SRAD + APRS + ground NMEA into one combined file (see App.tsx).
 
 function Field({ k, v, warn }: { k: string; v: string; warn?: boolean }) {
   return (
@@ -61,7 +42,6 @@ export function SradPanel({ latest, ds }: { latest: SradFrame | null; ds: DataSt
           </div>
         </div>
       )}
-      <LogControls source="srad" />
     </Panel>
   );
 }
@@ -122,7 +102,6 @@ export function CotsPanel({ latest, ds }: { latest: CotsFrame | null; ds: DataSt
           </div>
         </div>
       )}
-      <LogControls source="cots" />
     </Panel>
   );
 }

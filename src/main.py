@@ -188,6 +188,10 @@ async def lifespan(app: FastAPI):
     app.state.commands = commands
     app.state.tiles = tiles
     app.state.save_config = make_saver(config_save_path, config_writeback)
+    # Publisher for the landing-predictor wind override. Set in LIVE mode below;
+    # in STANDALONE it stays None and the synthetic predictor reads the stored
+    # override directly (see standalone._wind_override).
+    app.state.landing_publish = None
 
     # Best-effort map-tile prewarm around the ground station (offline after this).
     gs = config.get("ground_station")
@@ -207,6 +211,7 @@ async def lifespan(app: FastAPI):
 
         bridge = HeliosBridge(state, hub)
         _attach_bridge_publisher(bridge, commands)
+        app.state.landing_publish = bridge.publish_landing_config
         task = asyncio.create_task(bridge.run(), name="bridge")
         log.info("running in LIVE mode (connecting to Helios core)")
 

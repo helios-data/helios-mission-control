@@ -30,6 +30,8 @@ Thumbs.db
 
 # Any claude files
 .claude/
+.mcp.json
+CLAUDE.md
 
 # Local browser-test helpers
 frontend/browsercheck.mjs
