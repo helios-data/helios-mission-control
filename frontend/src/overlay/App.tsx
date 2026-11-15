@@ -1,16 +1,17 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { StateBadge } from "../components/StateBadge";
-import { AltitudeChart, type Profile } from "../components/AltitudeChart";
+import { AltitudeChart } from "../components/AltitudeChart";
 import { GpsMap } from "../components/GpsMap";
 import { Rocket3D } from "../components/Rocket3D";
 import { SignalDot } from "../components/SignalDot";
 import { EventTicker } from "../components/EventTicker";
-import { getStore, useStore } from "../lib/store";
+import { SponsorPanel, useSponsors } from "../components/SponsorPanel";
+import { getStore, useStore, hasGpsFix } from "../lib/store";
 import { sourceState, type DataState } from "../lib/fallback";
 import { useTheme } from "../lib/theme";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { stateColor } from "../lib/colors";
-import { clock, feet, fmt, fmtLatLon, M_TO_FT } from "../lib/units";
+import { PREDICTION, stateColor } from "../lib/colors";
+import { clock, feet, fmt, fmtLatLon, G_MS2, M_TO_FT } from "../lib/units";
 import { VideoPanel } from "./VideoPanel";
 
 const store = getStore("overlay");
@@ -21,40 +22,42 @@ function useClocks() {
   return t;
 }
 
-// Load optional expected flight profile: CSV "time_s,altitude_m".
-function useProfile(): Profile | undefined {
-  const [p, setP] = useState<Profile | undefined>(undefined);
-  useEffect(() => {
-    fetch("/brand/expected_profile.csv")
-      .then((r) => (r.ok ? r.text() : Promise.reject()))
-      .then((txt) => {
-        const rows = txt.trim().split(/\r?\n/).slice(1)
-          .map((l) => l.split(",").map(Number))
-          .filter((r) => r.length >= 2 && !Number.isNaN(r[0]))
-          .map((r) => [r[0], r[1]] as [number, number]);
-        if (rows.length) setP(rows);
-      })
-      .catch(() => setP(undefined));
-  }, []);
-  return p;
-}
-
-function Panel({ h, children, className = "", stale = false }: {
-  h: string; children: ReactNode; className?: string; stale?: boolean;
+// `h` is optional: a panel whose content is self-explanatory (the school mark)
+// reads better with no heading at all than with a redundant one.
+function Panel({ h, children, className = "", stale = false, right }: {
+  h?: string; children: ReactNode; className?: string; stale?: boolean; right?: ReactNode;
 }) {
   return (
     <div className={`ov-panel panel-corner ${className} ${stale ? "stale" : ""}`}>
-      <div className="h">{h}</div>
+      {h && (
+        <div className="h" style={right ? { display: "flex", justifyContent: "space-between", alignItems: "center" } : undefined}>
+          <span>{h}</span>{right}
+        </div>
+      )}
       {children}
     </div>
   );
 }
 
+// Operator toggle: overlay the predicted landing zone on the GPS map. Off by
+// default so the public stream stays clean; persisted across reloads (OBS keeps
+// the page alive, but a profile reload shouldn't lose the operator's choice).
+function usePredictionToggle(): [boolean, () => void] {
+  const [on, setOn] = useState<boolean>(() => {
+    try { return localStorage.getItem("hmc-show-landing") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hmc-show-landing", on ? "1" : "0"); } catch { /* ignore */ }
+  }, [on]);
+  return [on, () => setOn((v) => !v)];
+}
+
 export function App() {
   useStore(store);
   const [theme, toggleTheme] = useTheme();
+  const [showPred, togglePred] = usePredictionToggle();
   const now = useClocks();
-  const profile = useProfile();
+  const sponsors = useSponsors();
   const cfg = store.config;
   const ui = cfg.ui ?? {};
   const sradDs = sourceState(store.link, "srad", ui.srad_stale_seconds ?? 5);
@@ -64,12 +67,22 @@ export function App() {
   const hasSrad = sradDs.status !== "no_data" && s != null;
   const stale = sradDs.status === "stale";
 
-  // Tilt from vertical, estimated from the gravity vector when |a| ≈ 1 g.
+  // A GPS fix at 0,0 is the flight computer's default before lock — not a real
+  // fix. Only show the map once we have a genuine (non-0,0) coordinate from
+  // either source (tracks already exclude 0,0, so a non-empty track counts).
+  const hasGps = hasGpsFix(s?.gps.lon, s?.gps.lat)
+    || hasGpsFix(store.cots?.position?.lon, store.cots?.position?.lat)
+    || store.sradTrack.length > 0 || store.cotsTrack.length > 0;
+
+  // Tilt of the nose (body +Z, axial) from vertical, from the gravity vector when
+  // |a| ≈ 1 g. The IMU reports gravity, so "up" = -accel; at rest az ≈ -1 g and
+  // tilt ≈ 0°. Accel is m/s^2 (~9.81 at rest), so gate the magnitude in g.
   let tiltDeg = "—";
   if (s) {
-    const ax = s.accel.x ?? 0, ay = s.accel.y ?? 1, az = s.accel.z ?? 0;
+    const ax = s.accel.x ?? 0, ay = s.accel.y ?? 0, az = s.accel.z ?? -G_MS2;
     const a = Math.hypot(ax, ay, az);
-    if (a > 0.7 && a < 1.3) tiltDeg = fmt((Math.acos(Math.max(-1, Math.min(1, ay / a))) * 180) / Math.PI, 0);
+    const g = a / G_MS2;
+    if (g > 0.7 && g < 1.3) tiltDeg = fmt((Math.acos(Math.max(-1, Math.min(1, -az / a))) * 180) / Math.PI, 0);
   }
 
   const tClock = m?.t_plus_s != null ? clock(m.t_plus_s, true)
@@ -106,7 +119,7 @@ export function App() {
           <Rocket3D store={store} height={260} hasData={hasSrad}
             gyroUnits={cfg.gyro_units ?? "deg"} />
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-            <Stat label="ROLL RATE" value={hasSrad ? `${fmt(s!.gyro.y, 0)}` : "—"} unit="°/s" size={20} />
+            <Stat label="ROLL RATE" value={hasSrad ? `${fmt(s!.gyro.z, 0)}` : "—"} unit="°/s" size={20} />
             <Stat label="TILT" value={tiltDeg} unit="°" size={20} />
           </div>
         </Panel>
@@ -115,10 +128,23 @@ export function App() {
           <div style={{ display: "flex", gap: 20, marginTop: 12 }}>
             <Stat label="VELOCITY" value={hasSrad ? fmt(s!.kf_velocity, 0) : "—"} unit="m/s" size={34} />
             <Stat label="MACH" value={hasSrad ? fmt(s!.mach, 2) : "—"} size={34} />
+            <Stat label="G-FORCE" value={hasSrad && s!.g_force != null ? fmt(s!.g_force, 1) : "—"} unit="g" size={34} />
           </div>
           <div style={{ display: "flex", gap: 20, marginTop: 8 }}>
             <Stat label="MAX SPEED" value={fmt(m?.max_velocity_ms ?? 0, 0)} unit="m/s" size={18} />
             <Stat label="MAX MACH" value={fmt(m?.max_mach ?? 0, 2)} size={18} />
+            <Stat label="MAX G" value={fmt(m?.max_g ?? 0, 1)} unit="g" size={18} />
+          </div>
+        </Panel>
+        {/* Pinned to the bottom of the column (margin-top:auto in CSS). */}
+        <Panel className="school-panel">
+          <div className="school-mark">
+            <img
+              src={theme === "light"
+                ? "/brand/UBC-logo-2018-narrowsig-blue-rgb72.png"
+                : "/brand/UBC-logo-2018-narrowsig-white-rgb72.png"}
+              alt="The University of British Columbia"
+            />
           </div>
         </Panel>
       </div>
@@ -128,7 +154,7 @@ export function App() {
         <Panel h="Live Video" className="video-panel">
           <VideoPanel config={cfg} />
         </Panel>
-        <Panel h="Altitude · baro-average AGL vs expected profile" className="altitude-panel" stale={stale}>
+        <Panel className="altitude-panel" stale={stale}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 24, marginBottom: 8 }}>
             <Stat label="ALTITUDE AGL" size={52} unit="m"
               value={hasSrad ? fmt(s!.altitude_agl_m, 0) : "—"}
@@ -142,7 +168,7 @@ export function App() {
           {sradDs.status === "no_data" ? (
             <div className="awaiting" style={{ height: 200 }}>Awaiting telemetry</div>
           ) : (
-            <AltitudeChart store={store} profile={profile} height={200} dark={theme === "dark"} />
+            <AltitudeChart store={store} height={200} dark={theme === "dark"} />
           )}
           {hasSrad && s!.altitude_degraded && (
             <div className="mono" style={{ color: "var(--warn)", fontSize: 11, marginTop: 4 }}>
@@ -154,17 +180,28 @@ export function App() {
 
       {/* RIGHT */}
       <div className="ov-right">
-        <Panel h="GPS" stale={cotsDs.status === "stale" && sradDs.status !== "live"}>
-          {sradDs.status === "no_data" && cotsDs.status === "no_data" ? (
+        <Panel h="GPS" stale={cotsDs.status === "stale" && sradDs.status !== "live"}
+          right={<PredToggle on={showPred} onToggle={togglePred} />}>
+          {!hasGps ? (
             <div className="awaiting" style={{ height: 220 }}>No GPS fix</div>
           ) : (
-            <GpsMap store={store} height={220} theme={theme} />
+            <GpsMap store={store} height={220} theme={theme} showPrediction={showPred} autoFit />
           )}
           <div className="kv" style={{ marginTop: 8, display: "grid", gridTemplateColumns: "auto 1fr", gap: "2px 10px", fontFamily: "var(--mono)", fontSize: 12 }}>
             <span className="dim">lat</span><span style={{ textAlign: "right" }}>{fmtLatLon(s?.gps.lat)}</span>
             <span className="dim">lon</span><span style={{ textAlign: "right" }}>{fmtLatLon(s?.gps.lon)}</span>
             <span className="dim">fix / sats</span>
             <span style={{ textAlign: "right" }}>fix {s?.gps.fix ?? "—"} · {s?.gps.sats ?? 0} sats</span>
+            {/* activeLanding(), not `landing`: a prediction still present in
+                STANDBY belongs to a previous flight (see store.activeLanding). */}
+            {showPred && store.activeLanding()?.best_estimate && (
+              <>
+                <span style={{ color: PREDICTION.estimate }}>pred landing</span>
+                <span style={{ textAlign: "right", color: PREDICTION.estimate }}>
+                  {fmtLatLon(store.activeLanding()!.best_estimate!.lat)}, {fmtLatLon(store.activeLanding()!.best_estimate!.lon)}
+                </span>
+              </>
+            )}
           </div>
         </Panel>
         <Panel h="Telemetry Health">
@@ -173,17 +210,13 @@ export function App() {
             <SignalRow label="COTS · APRS" ds={cotsDs} rate={store.link?.cots.rate_hz ?? 0} />
           </div>
         </Panel>
+        {/* Pinned to the bottom of the column; hidden entirely when no logos. */}
+        {sponsors.length > 0 && (
+          <Panel h="Our Sponsors" className="sponsor-panel">
+            <SponsorPanel sections={sponsors} intervalS={ui.sponsor_rotate_seconds ?? 10} />
+          </Panel>
+        )}
       </div>
-
-      <footer className="ov-footer">
-        <div className="sponsors">
-          <img
-            src={theme === "light" ? "/brand/UBCRocket_Logo_Coloured.png" : "/brand/UBCRocket_Logo_White.png"}
-            alt="UBC Rocket"
-          />
-        </div>
-        <span className="powered">POWERED BY PROJECT HELIOS</span>
-      </footer>
     </div>
   );
 }
@@ -199,6 +232,25 @@ function Stat({ label, value, unit, sub, size = 24 }: {
       </span>
       {sub && <span className="faint mono" style={{ fontSize: 11 }}>{sub}</span>}
     </div>
+  );
+}
+
+// Small header toggle for the predicted landing-zone overlay on the GPS map.
+function PredToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      className="mono"
+      title="Toggle predicted landing zone on the map"
+      style={{
+        fontSize: 9, letterSpacing: "0.08em", padding: "2px 6px", borderRadius: 3, cursor: "pointer",
+        border: `1px solid ${on ? PREDICTION.estimate : "rgba(140,148,166,0.5)"}`,
+        background: on ? "rgba(255,79,163,0.16)" : "transparent",
+        color: on ? PREDICTION.estimate : "var(--text-dim)",
+      }}
+    >
+      LANDING {on ? "●" : "○"}
+    </button>
   );
 }
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
+from .. import sponsors
 from ..commands import CommandError
 
 log = logging.getLogger("mission-control.rest")
@@ -45,12 +47,15 @@ async def get_config(req: Request) -> dict[str, Any]:
 
 class ConfigPatch(BaseModel):
     # Locally-owned, editable subset (§3.2, Open Question 3).
-    callsign: str | None = None
+    # `callsign` is deliberately absent: it mirrors TeleGPS's direwolf.conf MYCALL
+    # and is owned by mission_config.json, so admin displays it read-only.
     rocket_name: str | None = None
     expected_apogee_m: float | None = None
     ui: dict[str, Any] | None = None
-    rfd900x: dict[str, Any] | None = None
     ground_station: dict[str, Any] | None = None
+    # No `rfd900x`: the ground modem owns its own registers. They are read from
+    # the `current_rfd_config` event and written with an `rfd_config` command,
+    # never stored here.
 
 
 @router.patch("/config")
@@ -68,11 +73,11 @@ async def patch_config(req: Request, patch: ConfigPatch) -> dict[str, Any]:
 
 
 # ---- packet logging ------------------------------------------------------
-@router.post("/log/{source}")
-async def log_now(req: Request, source: Literal["srad", "cots"]) -> dict[str, Any]:
-    state = _mission(req)
-    latest = state.srad_latest if source == "srad" else state.cots_latest
-    return req.app.state.logger.log_now(source, latest)
+# Continuous capture only (no one-shot snapshot — removed 2026-08-02). The admin
+# "Log now" control uses source="combined": SRAD + APRS + ground NMEA into one
+# file. The per-source keys remain valid for anything that wants a single stream.
+RecordSource = Literal["srad", "cots", "ground", "combined"]
+RECORD_SOURCES = ("srad", "cots", "ground", "combined")
 
 
 class RecordBody(BaseModel):
@@ -80,7 +85,7 @@ class RecordBody(BaseModel):
 
 
 @router.post("/record/{source}")
-async def record(req: Request, source: Literal["srad", "cots"], body: RecordBody) -> dict[str, Any]:
+async def record(req: Request, source: RecordSource, body: RecordBody) -> dict[str, Any]:
     logger = req.app.state.logger
     if body.action == "start":
         return logger.start_recording(source)
@@ -90,7 +95,7 @@ async def record(req: Request, source: Literal["srad", "cots"], body: RecordBody
 @router.get("/record")
 async def record_status(req: Request) -> dict[str, Any]:
     logger = req.app.state.logger
-    return {s: logger.recording_status(s) for s in ("srad", "cots")}
+    return {s: logger.recording_status(s) for s in RECORD_SOURCES}
 
 
 @router.get("/logs")
@@ -130,6 +135,44 @@ async def command_history(req: Request) -> dict[str, Any]:
             "camera_state": req.app.state.commands.camera_state}
 
 
+# ---- landing-predictor config (wind override) ----------------------------
+class LandingConfigBody(BaseModel):
+    wind_source_mode: Literal["live", "manual"]
+    wind_speed_ms: float = 0.0
+    wind_dir_deg: float = 0.0
+    operator: str = "operator"
+
+
+@router.post("/landing/config")
+async def landing_config(req: Request, body: LandingConfigBody) -> dict[str, Any]:
+    """Set the wind override for Helios.Services.LandingPredictor.
+
+    Stores the mode locally (so a reloading client sees it) and publishes a
+    LandingConfig to the predictor when a publisher is wired (LIVE mode). In
+    STANDALONE there is no publisher — the synthetic predictor reads the stored
+    override directly — so the call still succeeds and the sim reflects it.
+    """
+    state = _mission(req)
+    payload: dict[str, Any] = {
+        "wind_source_mode": body.wind_source_mode,
+        "wind_speed_ms": body.wind_speed_ms,
+        "wind_dir_deg": body.wind_dir_deg,
+        "operator": body.operator,
+        "issued_at_ms": int(time.time() * 1000),
+    }
+    frame = state.set_landing_config(payload)
+
+    publish = getattr(req.app.state, "landing_publish", None)
+    if publish is not None:
+        try:
+            await publish(payload)
+        except Exception as exc:  # noqa: BLE001 - surface the transport error to the operator
+            raise HTTPException(502, f"failed to publish landing config: {exc}") from exc
+
+    await req.app.state.hub.broadcast(frame)
+    return frame
+
+
 # ---- map tiles (offline-caching proxy) -----------------------------------
 @router.get("/tiles/{z}/{x}/{y}.png")
 async def tile(req: Request, z: int, x: int, y: int) -> Response:
@@ -139,6 +182,20 @@ async def tile(req: Request, z: int, x: int, y: int) -> Response:
     # Cache real tiles hard (immutable for the container's life); don't cache blanks.
     headers = {"Cache-Control": "public, max-age=31536000, immutable"} if real else {"Cache-Control": "no-store"}
     return Response(content=data, media_type="image/png", headers=headers)
+
+
+# ---- sponsor logos -------------------------------------------------------
+@router.get("/sponsors")
+async def sponsor_sections(req: Request) -> dict[str, Any]:
+    """Rotation sections for the overlay's sponsor panel.
+
+    Re-scanned per request (it's a cheap directory listing) so logos dropped into
+    the linked volume appear without restarting the container. The served
+    directory itself is fixed at startup by the /sponsors mount.
+    """
+    directory = getattr(req.app.state, "sponsor_dir", None)
+    origin = getattr(req.app.state, "sponsor_origin", "none")
+    return {"origin": origin, "sections": sponsors.list_sections(directory)}
 
 
 # ---- mission clock -------------------------------------------------------

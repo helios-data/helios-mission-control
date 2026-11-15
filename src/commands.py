@@ -1,10 +1,19 @@
-"""Command path: construction, publish, ack tracking, safety interlocks (§5).
+"""Command path: construction, publish, safety interlocks (§5).
 
 Transport-agnostic: the CommandManager builds command records and hands the
 payload to a `publish_fn`. In real mode the bridge wires that to serialize a
-`GroundCommand` proto and publish it on the core, and feeds `deliver_ack` from
-the `command_ack` subscription. In STANDALONE mode a simulator acks locally so
-the admin console is fully testable without hardware.
+`GroundCommand` proto (falcon-protos) and publish it on the core. In STANDALONE
+mode the publisher reflects camera commands back into the synthetic flight so the
+telemetry stream confirms them.
+
+There is no separate CommandAck any more: the onboard camera state is confirmed
+via the TelemetryPacket (runcam_power / runcam_recording, surfaced as
+srad.camera). A command record therefore only tracks whether we managed to
+publish it (SENT) or not (ERROR) — the operator watches srad.camera for the
+actual, rocket-reported result.
+
+The one exception is the VTX/RunCam power switch, which is resent on a timer
+until telemetry confirms it and marked FAILED if it never is (§4.7).
 """
 
 from __future__ import annotations
@@ -17,25 +26,81 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from .constants import IN_FLIGHT_STATES
+from .constants import (
+    IN_FLIGHT_STATES,
+    RFD_CHOICES,
+    RFD_FIELDS,
+    RFD_RANGES,
+    VTX_ACK_TIMEOUT_S,
+    VTX_MAX_RETRIES,
+)
 from .hub import ConnectionHub
 from .state import MissionState
 
 log = logging.getLogger("mission-control.commands")
 
-ACK_TIMEOUT_S = 8.0
 PublishFn = Callable[[int, str, dict[str, Any]], Awaitable[None]]
+# Camera command payload keys that telemetry (srad.camera) confirms.
+_CAMERA_KEYS = ("power", "recording")
 
 
 class CommandError(Exception):
     """Rejected by an interlock or validation; surfaced to the operator."""
 
 
-class AckStatus(StrEnum):
-    PENDING = "pending"
-    OK = "ok"
-    ERROR = "error"
-    TIMEOUT = "timeout"
+class CommandStatus(StrEnum):
+    PENDING = "pending"            # record created, not yet published
+    SENT = "sent"                  # published on the core / uplinked, awaiting confirmation
+    ACKNOWLEDGED = "acknowledged"  # telemetry confirms the commanded state took effect
+    FAILED = "failed"              # uplinked and resent, never confirmed (VTX power only)
+    ERROR = "error"                # publish failed or no publisher configured
+
+
+# Statuses that mean the command never took effect, so it must not count toward
+# the commanded camera state.
+_DEAD_STATUSES = (CommandStatus.FAILED, CommandStatus.ERROR)
+
+
+def _camera_matches(payload: dict[str, Any], cam: dict[str, Any]) -> bool:
+    """True when telemetry camera state satisfies every camera field in payload."""
+    keys = [k for k in _CAMERA_KEYS if k in payload]
+    return bool(keys) and all(bool(payload[k]) == bool(cam.get(k)) for k in keys)
+
+
+def _validate_rfd(payload: dict[str, Any]) -> None:
+    """Reject an rfd_config payload the ground modem wouldn't accept.
+
+    Every field is optional (a command may change one S-register), but anything
+    present must be an in-range integer. The admin form checks the same table
+    (frontend/src/lib/rfd.ts) before sending; this is the authoritative pass, so
+    the API can't be used to write a value that breaks the link.
+    """
+    unknown = sorted(set(payload) - RFD_FIELDS)
+    if unknown:
+        raise CommandError(f"unknown RFD field(s): {', '.join(unknown)}")
+
+    for key, value in list(payload.items()):
+        # JSON has no int/float distinction, so accept 30.0 but not 30.5.
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise CommandError(f"{key} must be a whole number, got {value!r}")
+        if value != int(value):
+            raise CommandError(f"{key} must be a whole number, got {value!r}")
+        value = payload[key] = int(value)
+        if key in RFD_RANGES:
+            lo, hi = RFD_RANGES[key]
+            if not lo <= value <= hi:
+                raise CommandError(f"{key}={value} out of range; must be {lo}-{hi}")
+        else:
+            choices = RFD_CHOICES[key]
+            if value not in choices:
+                raise CommandError(
+                    f"{key}={value} unsupported; must be one of "
+                    f"{', '.join(str(c) for c in choices)}"
+                )
+
+    lo_f, hi_f = payload.get("min_freq_khz"), payload.get("max_freq_khz")
+    if lo_f is not None and hi_f is not None and lo_f >= hi_f:
+        raise CommandError(f"min_freq_khz={lo_f} must be below max_freq_khz={hi_f}")
 
 
 @dataclass
@@ -45,7 +110,7 @@ class CommandRecord:
     payload: dict[str, Any]
     operator: str
     issued_at: float
-    status: AckStatus = AckStatus.PENDING
+    status: CommandStatus = CommandStatus.PENDING
     message: str = ""
 
     def frame(self) -> dict[str, Any]:
@@ -68,8 +133,12 @@ class CommandManager:
         self.publish_fn: PublishFn | None = None  # set by bridge or standalone
         self._next_id = 1
         self.records: dict[int, CommandRecord] = {}
-        # Commanded (not rocket-confirmed) camera state (§4.7).
-        self.camera_state = {"vtx_power": False, "runcam_power": False, "recording": False}
+        # Last *commanded* camera state (§4.7). This is what the operator asked
+        # for; the confirmed state comes back over telemetry (srad.camera).
+        self.camera_state = {"power": False, "recording": False}
+        # The in-flight VTX power resend loop, if any (at most one — see
+        # _start_vtx_retry).
+        self._vtx_retry: asyncio.Task[None] | None = None
 
     # ---- issue -----------------------------------------------------------
     async def issue(
@@ -85,21 +154,25 @@ class CommandManager:
         )
         self.records[cid] = rec
 
-        if cmd_type == "camera":  # track commanded (unconfirmed) state immediately
-            for k in ("vtx_power", "runcam_power", "recording"):
+        if cmd_type == "camera":  # track commanded state immediately
+            for k in ("power", "recording"):
                 if k in payload:
                     self.camera_state[k] = bool(payload[k])
 
         await self.hub.broadcast(rec.frame())
-        if self.publish_fn is not None:
-            await self.publish_fn(cid, cmd_type, payload)
-        else:
-            rec.status = AckStatus.ERROR
+        if self.publish_fn is None:
+            rec.status = CommandStatus.ERROR
             rec.message = "no publisher configured"
-            await self.hub.broadcast(rec.frame())
-            return rec
-
-        asyncio.create_task(self._ack_timeout(cid))
+        else:
+            try:
+                await self.publish_fn(cid, cmd_type, payload)
+                rec.status = CommandStatus.SENT
+            except Exception as exc:  # noqa: BLE001 - surface any transport error to the operator
+                rec.status = CommandStatus.ERROR
+                rec.message = str(exc)
+        await self.hub.broadcast(rec.frame())
+        if rec.status is CommandStatus.SENT and cmd_type == "camera" and "power" in payload:
+            self._start_vtx_retry(rec)
         return rec
 
     def _check_interlocks(self, cmd_type: str, payload: dict[str, Any], override: bool) -> None:
@@ -110,45 +183,162 @@ class CommandManager:
                     f"RFD reconfig locked out during {self.state.flight_state}; "
                     "set override to proceed"
                 )
+            # Override skips the flight-state lockout, never the value check.
+            _validate_rfd(payload)
         elif cmd_type == "camera":
-            # Recording requires RunCam power on (§4.7).
+            # Recording requires camera power on (§4.7): either it is already on and
+            # this command isn't turning it off, or this command turns it on.
             wants_recording = payload.get("recording") is True
-            powering_off = payload.get("runcam_power") is False
-            currently_on = self.camera_state["runcam_power"]
-            if wants_recording and (powering_off or not currently_on) and not payload.get("runcam_power"):
-                raise CommandError("cannot start recording while RunCam power is off")
+            powering_off = payload.get("power") is False
+            powering_on = payload.get("power") is True
+            currently_on = self.camera_state["power"]
+            if wants_recording and not (powering_on or (currently_on and not powering_off)):
+                raise CommandError("cannot start recording while camera power is off")
         else:
             raise CommandError(f"unknown command type: {cmd_type}")
-
-    # ---- ack -------------------------------------------------------------
-    async def deliver_ack(self, command_id: int, success: bool, message: str = "") -> None:
-        rec = self.records.get(command_id)
-        if rec is None or rec.status is not AckStatus.PENDING:
-            return
-        rec.status = AckStatus.OK if success else AckStatus.ERROR
-        rec.message = message
-        await self.hub.broadcast(rec.frame())
-
-    async def _ack_timeout(self, command_id: int) -> None:
-        await asyncio.sleep(ACK_TIMEOUT_S)
-        rec = self.records.get(command_id)
-        if rec is not None and rec.status is AckStatus.PENDING:
-            rec.status = AckStatus.TIMEOUT
-            rec.message = "no ack within timeout"
-            await self.hub.broadcast(rec.frame())
 
     def history(self) -> list[dict[str, Any]]:
         return [r.frame() for r in sorted(self.records.values(), key=lambda r: r.command_id)]
 
+    # ---- VTX power resend (§4.7) -----------------------------------------
+    def _vtx_retry_config(self) -> tuple[float, int]:
+        """``(ack timeout seconds, max retries)`` from config, else the defaults.
 
-def attach_standalone_simulator(mgr: CommandManager) -> None:
-    """Wire publish_fn to a local simulator that acks after a short delay."""
+        Read per command rather than cached at startup, so an admin config edit
+        takes effect on the next press.
+        """
+        block = self.state.config.get("commands") or {}
+        cfg = block.get("vtx_power") or {}
+        try:
+            timeout = float(cfg.get("ack_timeout_seconds", VTX_ACK_TIMEOUT_S))
+        except (TypeError, ValueError):
+            timeout = VTX_ACK_TIMEOUT_S
+        try:
+            retries = int(cfg.get("max_retries", VTX_MAX_RETRIES))
+        except (TypeError, ValueError):
+            retries = VTX_MAX_RETRIES
+        # A sub-50ms timeout would be a resend storm on a link that runs at ~4 Hz.
+        return max(0.05, timeout), max(0, retries)
 
-    async def _sim(command_id: int, cmd_type: str, payload: dict[str, Any]) -> None:
-        async def _later() -> None:
-            await asyncio.sleep(0.4)
-            await mgr.deliver_ack(command_id, True, f"[sim] {cmd_type} applied")
+    def _start_vtx_retry(self, rec: CommandRecord) -> None:
+        """Watch a published VTX power command and resend it until it's confirmed.
 
-        asyncio.create_task(_later())
+        At most one watcher: a newer power command supersedes the older one, and
+        resending a command the operator has since reversed would fight the
+        switch they just flipped.
+        """
+        if self._vtx_retry is not None:
+            self._vtx_retry.cancel()
+        self._vtx_retry = asyncio.create_task(
+            self._retry_vtx_power(rec), name=f"vtx-power-retry-{rec.command_id}"
+        )
 
-    mgr.publish_fn = _sim
+    async def _retry_vtx_power(self, rec: CommandRecord) -> None:
+        """Resend `rec` every timeout until telemetry confirms it, then fail it.
+
+        observe_srad flips the record to ACKNOWLEDGED the moment srad.camera
+        reports the requested state, which is what ends this loop — so the record
+        is the shared signal and there is no separate ack event to wait on. Giving
+        up reverts the commanded camera state (the button snaps back), because a
+        switch showing ON that the rocket never received is worse than one showing
+        the truth.
+        """
+        timeout, max_retries = self._vtx_retry_config()
+        for attempt in range(1, max_retries + 1):
+            await asyncio.sleep(timeout)
+            if rec.status is not CommandStatus.SENT:
+                return  # confirmed by telemetry, or already dead
+            if self.publish_fn is None:
+                break
+            try:
+                await self.publish_fn(rec.command_id, rec.type, rec.payload)
+            except Exception as exc:  # noqa: BLE001 - surface any transport error to the operator
+                rec.status = CommandStatus.ERROR
+                rec.message = f"resend {attempt} failed: {exc}"
+                self._recompute_camera_state()
+                await self.hub.broadcast(rec.frame())
+                return
+            log.warning(
+                "VTX power command %d unconfirmed; resent %d/%d",
+                rec.command_id, attempt, max_retries,
+            )
+            rec.message = f"no confirmation — resent {attempt}/{max_retries}"
+            await self.hub.broadcast(rec.frame())
+
+        # The last resend gets the same window as every other one before we quit.
+        await asyncio.sleep(timeout)
+        if rec.status is not CommandStatus.SENT:
+            return
+        rec.status = CommandStatus.FAILED
+        rec.message = (
+            f"no telemetry confirmation after {max_retries} "
+            f"{'retry' if max_retries == 1 else 'retries'}"
+        )
+        self._recompute_camera_state()
+        log.error("VTX power command %d failed: %s", rec.command_id, rec.message)
+        await self.hub.broadcast(rec.frame())
+
+    def _recompute_camera_state(self) -> None:
+        """Rebuild the commanded camera state by replaying the commands that stuck.
+
+        A FAILED/ERROR command never reached the rocket, so dropping it and
+        replaying the rest lands on what the last surviving command asked for —
+        rather than a hardcoded default, or the state the dead command optimist-
+        ically applied when it was issued. MissionStore.recomputeCameraState
+        mirrors this rule on the frontend; keep the two in sync.
+        """
+        rebuilt = {"power": False, "recording": False}
+        for rec in sorted(self.records.values(), key=lambda r: r.command_id):
+            if rec.type != "camera" or rec.status in _DEAD_STATUSES:
+                continue
+            for key in _CAMERA_KEYS:
+                if key in rec.payload:
+                    rebuilt[key] = bool(rec.payload[key])
+        self.camera_state.update(rebuilt)
+
+    # ---- telemetry-driven acknowledgement --------------------------------
+    def observe_srad(self, frame: dict[str, Any]) -> None:
+        """Flip SENT camera commands to ACKNOWLEDGED when telemetry confirms them.
+
+        Confirmation is baked into the TelemetryPacket (srad.camera) rather than a
+        CommandAck, so we watch the telemetry stream: a published camera command is
+        acknowledged once srad.camera reflects its requested state. Called from a
+        MissionState sink on the running loop, so we can schedule the WS re-broadcast.
+
+        Only SENT records are eligible, which makes FAILED terminal: once we've
+        given up and snapped the switch back, a late-arriving frame must not
+        silently flip the log green and move the button again under the operator.
+        The live truth is the `confirmed` pill, which reads srad.camera directly.
+        """
+        cam = frame.get("camera")
+        if not cam:
+            return
+        for rec in self.records.values():
+            if (
+                rec.type == "camera"
+                and rec.status is CommandStatus.SENT
+                and _camera_matches(rec.payload, cam)
+            ):
+                rec.status = CommandStatus.ACKNOWLEDGED
+                rec.message = "confirmed by telemetry"
+                asyncio.create_task(self.hub.broadcast(rec.frame()))
+
+    def observe_rfd_config(self, frame: dict[str, Any]) -> None:
+        """Flip SENT rfd_config commands to ACKNOWLEDGED when the modem reports back.
+
+        helios-cots-telemetry re-publishes `current_rfd_config` after it writes
+        the ground modem, so a command is confirmed once every register it asked
+        for is reflected in the reported config. Same shape as observe_srad: a
+        MissionState sink on the running loop, so the WS re-broadcast can be
+        scheduled.
+        """
+        cfg = frame.get("config")
+        if not cfg:
+            return
+        for rec in self.records.values():
+            if rec.type != "rfd_config" or rec.status is not CommandStatus.SENT:
+                continue
+            if all(cfg.get(k) == v for k, v in rec.payload.items()):
+                rec.status = CommandStatus.ACKNOWLEDGED
+                rec.message = "confirmed by ground modem"
+                asyncio.create_task(self.hub.broadcast(rec.frame()))

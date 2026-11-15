@@ -18,8 +18,9 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import sponsors
 from .api import rest, ws
-from .commands import CommandManager, attach_standalone_simulator
+from .commands import CommandManager
 from .hub import ConnectionHub
 from .packet_log import PacketLogger
 from .state import MissionState
@@ -152,11 +153,31 @@ async def lifespan(app: FastAPI):
     config, config_save_path, config_writeback = resolve_config()
     log_dir = os.getenv("LOG_DIR", str(ROOT / "logs"))
 
+    # Video method is decided by run mode, not by config files:
+    #   STANDALONE (no Helios/go2rtc) -> read the capture card in-browser
+    #   otherwise                     -> pull the go2rtc Video node's WHEP stream
+    standalone = os.getenv("STANDALONE") == "1"
+    config.setdefault("ui", {})["video_source"] = (
+        "local-capture" if standalone else "webrtc-url"
+    )
+
     state = MissionState(config)
     hub = ConnectionHub()
     logger = PacketLogger(log_dir)
     commands = CommandManager(state, hub)
     state.subscribe(logger.sink)
+
+    # There is no CommandAck proto: commands are confirmed by what comes back on
+    # the wire. Camera state arrives in telemetry (srad.camera); the ground
+    # modem's registers arrive on `current_rfd_config` after cots-telemetry
+    # applies a write.
+    def _confirm_commands(source: str, frame: dict[str, Any]) -> None:
+        if source == "srad":
+            commands.observe_srad(frame)
+        elif source == "rfd_config":
+            commands.observe_rfd_config(frame)
+
+    state.subscribe(_confirm_commands)
 
     tile_dir = os.getenv("TILE_DIR", str(ROOT / "tiles"))
     tiles = TileCache(tile_dir, config.get("map"))
@@ -167,6 +188,10 @@ async def lifespan(app: FastAPI):
     app.state.commands = commands
     app.state.tiles = tiles
     app.state.save_config = make_saver(config_save_path, config_writeback)
+    # Publisher for the landing-predictor wind override. Set in LIVE mode below;
+    # in STANDALONE it stays None and the synthetic predictor reads the stored
+    # override directly (see standalone._wind_override).
+    app.state.landing_publish = None
 
     # Best-effort map-tile prewarm around the ground station (offline after this).
     gs = config.get("ground_station")
@@ -174,19 +199,19 @@ async def lifespan(app: FastAPI):
     if gs and gs.get("lat") is not None and gs.get("lon") is not None:
         prewarm_task = asyncio.create_task(tiles.prewarm(gs["lat"], gs["lon"]), name="tile-prewarm")
 
-    standalone = os.getenv("STANDALONE") == "1"
     if standalone:
         from .standalone import run_standalone
 
-        attach_standalone_simulator(commands)
-        task = asyncio.create_task(run_standalone(state, hub), name="standalone")
+        # run_standalone wires commands.publish_fn to reflect camera commands back
+        # into the synthetic flight so telemetry confirms them (no CommandAck).
+        task = asyncio.create_task(run_standalone(state, hub, commands), name="standalone")
         log.info("running in STANDALONE mode")
     else:
         from .helios_bridge import HeliosBridge
 
         bridge = HeliosBridge(state, hub)
-        bridge.commands = commands
         _attach_bridge_publisher(bridge, commands)
+        app.state.landing_publish = bridge.publish_landing_config
         task = asyncio.create_task(bridge.run(), name="bridge")
         log.info("running in LIVE mode (connecting to Helios core)")
 
@@ -203,16 +228,16 @@ async def lifespan(app: FastAPI):
 
 
 def _attach_bridge_publisher(bridge, commands: CommandManager) -> None:
-    """Wire command publishing/ack to the live bridge once it's connected.
+    """Wire command publishing to the live bridge once it's connected.
 
-    The actual GroundCommand serialization + command_ack subscription is
-    implemented against the proposed protos (protos-proposed/) and only runs
-    when `make protos` has generated them. Until then this raises a clear error
-    rather than silently dropping commands.
+    The GroundCommand serialization runs against the falcon-protos GroundCommand
+    and only works when `make protos` has generated it; until then publish_command
+    raises a clear error rather than silently dropping commands. There is no
+    command_ack subscription — camera status is confirmed via telemetry.
     """
 
     async def _publish(command_id: int, cmd_type: str, payload: dict[str, Any]) -> None:
-        await bridge.publish_command(command_id, cmd_type, payload, commands)
+        await bridge.publish_command(command_id, cmd_type, payload)
 
     commands.publish_fn = _publish
 
@@ -225,6 +250,18 @@ def create_app() -> FastAPI:
     # Repo assets (logos, expected_profile.csv) available to the frontend at runtime.
     if ASSETS_DIR.exists():
         app.mount("/brand", StaticFiles(directory=str(ASSETS_DIR)), name="brand")
+
+    # Sponsor logos: the launcher-linked /app/sponsorships volume, or the bundled
+    # sample set in STANDALONE/dev. Resolved once at startup — the volume is
+    # mounted before the process starts, and the overlay runs for a whole flight.
+    sponsor_dir, sponsor_origin = sponsors.resolve_dir()
+    app.state.sponsor_dir = sponsor_dir
+    app.state.sponsor_origin = sponsor_origin
+    if sponsor_dir is not None:
+        app.mount("/sponsors", StaticFiles(directory=str(sponsor_dir)), name="sponsors")
+        log.info("serving sponsor logos from %s (%s)", sponsor_dir, sponsor_origin)
+    else:
+        log.info("no sponsor logos found; sponsor panel will stay hidden")
 
     # Built frontend bundles (Vite base='/static/').
     if (FRONTEND_DIST / "static").exists():

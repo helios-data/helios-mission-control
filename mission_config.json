@@ -7,25 +7,23 @@
   "gyro_units": "deg",
   "ground_station": {
     "label": "Ground Station",
-    "lat": 32.9903,
-    "lon": -106.9749,
+    "lat": 49.2676634,
+    "lon": -123.2550483,
     "alt_m": 1401
-  },
-  "rfd900x": {
-    "min_freq_khz": 902000,
-    "max_freq_khz": 928000,
-    "net_id": 25,
-    "tx_power_dbm": 30,
-    "air_speed_kbps": 64,
-    "ecc": true,
-    "mavlink": false
   },
   "ui": {
     "refresh_hz": 20,
     "srad_stale_seconds": 5,
     "cots_stale_seconds": 60,
-    "video_source": "webrtc-url",
-    "video_url": "http://localhost:1984/api/whep?src=cloudburst"
+    "ground_stale_seconds": 15,
+    "sponsor_rotate_seconds": 10,
+    "video_url": "http://localhost:1984/api/webrtc?src=cloudburst"
+  },
+  "commands": {
+    "vtx_power": {
+      "ack_timeout_seconds": 1,
+      "max_retries": 10
+    }
   },
   "map": {
     "tile_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -37,5 +35,5 @@
       "max_zoom": 14
     }
   },
-  "notes": "ground_station lat/lon are Spaceport America placeholders; set to the actual pad before launch. callsign mirrors TeleGPS direwolf.conf MYCALL."
+  "notes": "ground_station is the FALLBACK position, used only when Helios.Services.GroundGPS has no fix (node down, raw_sentence only, or fix_quality INVALID); with a fix the live NMEA position wins and the admin pad row reads GNSS instead of CONFIG. Keep it set to the actual pad anyway, since it is what shows before the receiver locks. NOTE: alt_m 1401 is left over from the Spaceport placeholder and does not match the current lat/lon - it is the COTS AGL baseline whenever NMEA carries no altitude (RMC sentences), so set it to the real site elevation. callsign mirrors TeleGPS direwolf.conf MYCALL."
 }

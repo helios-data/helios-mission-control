@@ -22,17 +22,19 @@ deps: ## Sync submodules + Python deps + frontend deps
 	cd frontend && $(NPM) install
 
 .PHONY: protos
-protos: ## Compile falcon-protos + protos-proposed -> src/generated (betterproto2)
+protos: ## Compile falcon-protos + helios-protos + protos-proposed -> src/generated (betterproto2)
 	@if [ ! -d falcon-protos ]; then \
 		echo "falcon-protos submodule missing; run 'make deps' first"; exit 1; fi
+	@if [ ! -d helios-protos/transport ]; then \
+		echo "helios-protos submodule missing; run 'make deps' first"; exit 1; fi
 	rm -rf src/generated && mkdir -p src/generated
 	PLUGIN=$$(find .venv -name 'protoc-gen-python_betterproto2*' | head -1); \
 	$(UV) run python -m grpc_tools.protoc \
 		--plugin=protoc-gen-python_betterproto2=$$PLUGIN \
-		-I falcon-protos -I protos-proposed \
+		-I falcon-protos -I protos-proposed -I helios-protos \
 		--python_betterproto2_out=src/generated \
-		$$(find falcon-protos protos-proposed -name '*.proto')
-	@echo "note: AprsPacket is imported from the SDK (helios.generated.helios.transport)"
+		$$(find falcon-protos protos-proposed helios-protos -name '*.proto')
+	@echo "AprsPacket + NmeaSentence come from helios-protos -> src.generated.helios.transport"
 
 .PHONY: frontend
 frontend: ## Build the frontend into frontend/dist

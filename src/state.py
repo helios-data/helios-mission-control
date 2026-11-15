@@ -13,16 +13,22 @@ depends on protobuf being importable.
 
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .constants import mach_estimate
+from .constants import NMEA_POSITION_SENTENCES, mach_estimate
 
 SRAD_RING_DEFAULT = 10_000
 COTS_RING_DEFAULT = 5_000
+
+# Standard gravity. The FALCON IMU reports specific force in m/s^2 (~9.81 at
+# rest, i.e. 1 g), matching the 3D-attitude convention in Rocket3D.tsx. We divide
+# the accel magnitude by this to report G-force in g.
+STANDARD_GRAVITY = 9.80665
 
 # FALCON firmware flight states annotated on entry (STANDBY = pre-launch, skipped).
 _FLIGHT_STATE_EVENTS = ("ASCENT", "MACH_LOCK", "DROGUE_DESCENT", "MAIN_DESCENT", "LANDED")
@@ -116,10 +122,30 @@ class MissionState:
         ui = config.get("ui", {})
         self.srad_link = LinkTracker(stale_after_s=ui.get("srad_stale_seconds", 5))
         self.cots_link = LinkTracker(stale_after_s=ui.get("cots_stale_seconds", 60))
+        # Landing-prediction node (Helios.Services.LandingPredictor) is low-rate and
+        # optional; a generous stale window so a paused predictor reads STALE, not gone.
+        self.landing_link = LinkTracker(stale_after_s=ui.get("landing_stale_seconds", 30))
+        # Ground-station GNSS (Helios.Services.GroundGPS). Optional node — the
+        # config coordinates stand in when it isn't running or has no fix.
+        self.ground_link = LinkTracker(stale_after_s=ui.get("ground_stale_seconds", 15))
         self.core_connected = False
 
         self.srad_latest: dict[str, Any] | None = None
         self.cots_latest: dict[str, Any] | None = None
+        self.landing_latest: dict[str, Any] | None = None
+        # Operator wind override sent to the LandingPredictor (see set_landing_config).
+        # Held so a reloading admin re-reads the current mode from the snapshot.
+        self.landing_config: dict[str, Any] | None = None
+        # Latest NMEA sentence from the ground receiver, of any type.
+        self.ground_latest: dict[str, Any] | None = None
+        # Accumulated last-known-good position, built up across sentence types
+        # (see ingest_ground) — this, not ground_latest, resolves the station.
+        self.ground_fix: dict[str, Any] | None = None
+        self.ground_fix_at: float | None = None       # time.monotonic of last fix
+        self.ground_fix_quality: str | None = None    # from the last positional sentence
+        # Ground modem's actual S-registers, as reported by helios-cots-telemetry
+        # on `current_rfd_config`. None until that node reports in.
+        self.rfd_config_latest: dict[str, Any] | None = None
         self.srad_history: deque[dict[str, Any]] = deque(maxlen=srad_ring)
         self.cots_history: deque[dict[str, Any]] = deque(maxlen=cots_ring)
 
@@ -132,6 +158,7 @@ class MissionState:
         self.max_altitude_msl_m = 0.0
         self.max_velocity_ms = 0.0
         self.max_mach = 0.0
+        self.max_g = 0.0
         self.apogee: dict[str, Any] | None = None
 
         # Mission events (one per type) = FALCON firmware flight-state
@@ -165,6 +192,17 @@ class MissionState:
         vel = float(srad.get("kf_velocity") or 0.0)
         srad["mach"] = round(mach_estimate(abs(vel), msl), 3)
 
+        # G-force = magnitude of the accel vector, converted from m/s^2 to g. The
+        # IMU reports specific force (gravity + thrust), so this reads ~1 g at rest.
+        accel = srad.get("accel", {})
+        ax, ay, az = accel.get("x"), accel.get("y"), accel.get("z")
+        if ax is not None and ay is not None and az is not None:
+            g_force = math.hypot(ax, ay, az) / STANDARD_GRAVITY
+            srad["g_force"] = round(g_force, 3)
+        else:
+            g_force = None
+            srad["g_force"] = None
+
         self._update_flight_state(srad.get("flight_state", "STANDBY"))
 
         # Max trackers (only count ascent-region positive altitude for sanity)
@@ -176,6 +214,8 @@ class MissionState:
             self.max_velocity_ms = abs(vel)
         if srad["mach"] > self.max_mach:
             self.max_mach = srad["mach"]
+        if g_force is not None and g_force > self.max_g:
+            self.max_g = g_force
         self._detect_apogee(agl)
         self._detect_events(srad, agl)
 
@@ -192,6 +232,107 @@ class MissionState:
         self.cots_link.mark()
         self._emit("cots", cots)
         return cots
+
+    def ingest_landing(self, pred: dict[str, Any]) -> dict[str, Any]:
+        """Store the latest landing prediction and mark the predictor link fresh."""
+        self.landing_latest = pred
+        self.landing_link.mark()
+        self._emit("landing", pred)
+        return pred
+
+    def set_landing_config(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        """Record the operator's wind override and return the broadcastable frame.
+
+        Stored so a client that reloads mid-flight re-reads the current mode from
+        the full snapshot; the actual wind then comes back on the prediction
+        stream (the predictor, or the STANDALONE sim, echoes it).
+        """
+        frame = {"type": "landing_config", **cfg}
+        self.landing_config = frame
+        return frame
+
+    def ingest_ground(self, frame: dict[str, Any]) -> dict[str, Any]:
+        """Fold one NMEA sentence into the accumulated ground-station fix.
+
+        A GNSS receiver emits a *cycle* of different sentence types — roughly
+        VTG, GGA, GSA, RMC (+GSV) once a second — and they carry different
+        things: only GGA/RMC/GLL carry a position at all, only GGA carries
+        altitude, satellites and HDOP, only RMC carries speed and course. So a
+        single sentence is not a complete picture of where we are, and resolving
+        the station from just the newest one made every field strobe: elevation
+        flipped between the GNSS value and the config fallback on every RMC, and
+        the whole position dropped to config on every VTG/GSA/GSV.
+
+        Instead the fix is *accumulated*: non-positional sentences leave it
+        untouched, and positional ones merge in only the fields they actually
+        carry. `ground_latest` still holds the newest sentence verbatim so the UI
+        can show what just arrived.
+        """
+        self.ground_latest = frame
+        if str(frame.get("sentence_type") or "").upper() in NMEA_POSITION_SENTENCES:
+            # Only these sentences are authoritative about fix state.
+            self.ground_fix_quality = frame.get("fix_quality_name")
+            pos = frame.get("position")
+            if pos:
+                merged = dict(self.ground_fix or {})
+                # Merge, don't replace: an RMC must not wipe the altitude/
+                # satellites/HDOP that the preceding GGA supplied.
+                merged.update({k: v for k, v in pos.items() if v is not None})
+                self.ground_fix = merged
+                self.ground_fix_at = time.monotonic()
+        self.ground_link.mark()
+        self._emit("ground", frame)
+        return frame
+
+    def ground_station(self) -> dict[str, Any]:
+        """The ground station's effective position, live GNSS preferred.
+
+        Resolved from the *accumulated* fix (see :meth:`ingest_ground`), not the
+        newest sentence, so it stays put between the position-bearing sentences
+        rather than strobing back to the configured coordinates.
+
+        The configured ``ground_station`` block is the fallback, used when the
+        GroundGPS node isn't publishing, has never had a fix, or hasn't produced
+        one for ``ui.ground_stale_seconds``. ``source`` is ``"gnss"`` or
+        ``"config"`` so the UI can show which is live; ``label`` always comes
+        from the config since it names the marker.
+        """
+        cfg = self.config.get("ground_station") or {}
+        out: dict[str, Any] = {
+            "label": cfg.get("label", "Ground Station"),
+            "lat": cfg.get("lat"),
+            "lon": cfg.get("lon"),
+            "alt_m": cfg.get("alt_m"),
+            "source": "config",
+        }
+        fix = self.ground_fix
+        if not fix or self.ground_fix_at is None:
+            return out
+        # A fix that stopped arriving eventually stops being the truth. Held for
+        # the same window that marks the link stale, so a receiver that drops
+        # lock reverts to config instead of pinning a position for ever.
+        if (time.monotonic() - self.ground_fix_at) > self.ground_link.stale_after_s:
+            return out
+        if fix.get("lat") is not None and fix.get("lon") is not None:
+            out["lat"] = fix["lat"]
+            out["lon"] = fix["lon"]
+            # Altitude only ever comes from GGA. Keeping the accumulated value
+            # means an RMC no longer swings the COTS AGL baseline by the
+            # difference between the real elevation and the config placeholder.
+            if fix.get("alt_m") is not None:
+                out["alt_m"] = fix["alt_m"]
+            out["source"] = "gnss"
+        return out
+
+    def ingest_rfd_config(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        """Store the ground modem's reported S-registers and fan the frame out.
+
+        Emitted as a sink event so CommandManager can flip a sent rfd_config
+        command to ACKNOWLEDGED once the modem reports the values back.
+        """
+        self.rfd_config_latest = cfg
+        self._emit("rfd_config", cfg)
+        return cfg
 
     def record_srad_error(self) -> None:
         self.srad_link.mark_error()
@@ -275,6 +416,8 @@ class MissionState:
             "core_connected": self.core_connected,
             "srad": self.srad_link.snapshot(),
             "cots": self.cots_link.snapshot(),
+            "landing": self.landing_link.snapshot(),
+            "ground": self.ground_link.snapshot(),
         }
 
     def mission_snapshot(self) -> dict[str, Any]:
@@ -290,6 +433,7 @@ class MissionState:
             "max_altitude_msl_m": round(self.max_altitude_msl_m, 2),
             "max_velocity_ms": round(self.max_velocity_ms, 2),
             "max_mach": round(self.max_mach, 3),
+            "max_g": round(self.max_g, 2),
             "apogee": self.apogee,
             "events": self.events,
             "transitions": [t.__dict__ for t in self.transitions[-32:]],
@@ -304,4 +448,8 @@ class MissionState:
             "mission": self.mission_snapshot(),
             "srad": self.srad_latest,
             "cots": self.cots_latest,
+            "prediction": self.landing_latest,
+            "landing_config": self.landing_config,
+            "rfd_config": self.rfd_config_latest,
+            "ground": self.ground_latest,
         }

@@ -6,8 +6,9 @@
 
 import { useSyncExternalStore } from "react";
 import type {
-  AckFrame, CotsFrame, EventType, Frame, LinkFrame, MissionConfig, MissionEvent,
-  MissionFrame, SradFrame,
+  AckFrame, CotsFrame, EventType, Frame, GroundFrame, GroundPosition, GroundStation,
+  LandingConfigFrame, LinkFrame, NmeaFixQuality,
+  MissionConfig, MissionEvent, MissionFrame, PredictionFrame, RfdConfigFrame, SradFrame,
 } from "./telemetry";
 import { EVENT_META } from "./eventmeta";
 
@@ -36,12 +37,37 @@ export class MissionStore {
   cots: CotsFrame | null = null;
   link: LinkFrame | null = null;
   mission: MissionFrame | null = null;
+  landing: PredictionFrame | null = null;
+  // Current operator wind override for the landing predictor (null = none set).
+  landingConfig: LandingConfigFrame | null = null;
+  // Latest NMEA sentence from the ground receiver (Helios.Services.GroundGPS),
+  // of any type — for showing what just arrived. Kept even with no fix, so the
+  // UI can distinguish "receiver not locked" from "node not running".
+  ground: GroundFrame | null = null;
+  // Accumulated last-known-good position, built across sentence types: only
+  // GGA/RMC/GLL carry a position at all, and only GGA carries altitude,
+  // satellites and HDOP. Resolving from the newest sentence alone made every
+  // field strobe back to the config fallback ~3 times a second. Resolve via
+  // groundStation(); this mirrors MissionState.ingest_ground on the backend.
+  groundFix: Partial<GroundPosition> | null = null;
+  groundFixAt: number | null = null;          // epoch ms of the last position
+  groundFixQuality: NmeaFixQuality | null = null;  // from the last positional sentence
+  // Ground modem's live S-registers (`current_rfd_config`) — the only source
+  // for them. Null until helios-cots-telemetry reports in.
+  rfdConfig: RfdConfigFrame | null = null;
   config: MissionConfig = {};
   acks: AckFrame[] = [];
   events: MissionEvent[] = [];
   annotations: Annotation[] = [];
-  cameraState = { vtx_power: false, runcam_power: false, recording: false };
+  // Last *commanded* camera state (a single switch powers VTX + RunCam together).
+  // The confirmed state reported by the FC is on srad.camera.
+  cameraState = { power: false, recording: false };
   connected = false;
+  // Client-side receipt time of the last SRAD frame (epoch ms), null if none yet.
+  // Deliberately not link.srad.age_s: that is computed server-side and freezes at
+  // its last value if the socket itself drops, which is the case the RFD
+  // watchdog most needs to catch.
+  lastSradAt: number | null = null;
 
   // ring buffers for heavy views
   alt: AltSeries = { x: [], baroAvg: [], kf: [], cots: [] };
@@ -49,6 +75,12 @@ export class MissionStore {
   cotsTrack: [number, number][] = [];
   private _t0ms: number | null = null;
   private _lastCotsAlt: number | null = null;
+  // True when a new COTS altitude has arrived since the last SRAD tick. The COTS
+  // series shares the SRAD timebase but APRS is far slower, so we plot the real
+  // COTS point only on the tick it arrives and null in between; with spanGaps the
+  // chart draws a straight line between adjacent COTS points instead of the
+  // staircase that re-pushing the held value on every tick produced.
+  private _cotsFresh = false;
 
   private ws: WebSocket | null = null;
   private version = 0;
@@ -89,11 +121,17 @@ export class MissionStore {
     const ground = sradItems.at(-1)?.ground_altitude ?? 0;
     for (const c of cotsItems) {
       const p = c.position;
-      if (p?.lon != null && p?.lat != null) push(this.cotsTrack, [p.lon, p.lat], MAX_TRACK);
+      if (hasGpsFix(p?.lon, p?.lat)) push(this.cotsTrack, [p!.lon!, p!.lat!], MAX_TRACK);
       if (p?.altitude_m != null) this._lastCotsAlt = p.altitude_m - ground;
     }
     if (cotsItems.length) this.cots = cotsItems.at(-1)!;
     for (const f of sradItems) this._pushSradSeries(f);
+    // Backfilled ticks carry null COTS (we can't align sparse APRS to each SRAD
+    // frame after the fact); anchor the last-known COTS altitude at the newest
+    // tick so a mid-flight join starts its COTS line from a real point.
+    if (cotsItems.length && this._lastCotsAlt !== null && this.alt.cots.length) {
+      this.alt.cots[this.alt.cots.length - 1] = this._lastCotsAlt;
+    }
     if (sradItems.length) this.srad = sradItems.at(-1)!;
     this.bump();
   }
@@ -129,15 +167,67 @@ export class MissionStore {
         this.setMission(f.mission ?? null);
         if (f.srad) this.ingestSrad(f.srad);
         if (f.cots) this.ingestCots(f.cots);
+        if (f.prediction) this.landing = f.prediction;
+        if (f.landing_config) this.landingConfig = f.landing_config;
+        if (f.rfd_config) this.rfdConfig = f.rfd_config;
+        if (f.ground) this.ingestGround(f.ground);
         break;
       case "srad": this.ingestSrad(f); break;
       case "cots": this.ingestCots(f); break;
       case "link": this.link = f; break;
       case "mission": this.setMission(f); break;
+      case "prediction": this.landing = f; break;
+      case "landing_config": this.landingConfig = f; break;
+      case "rfd_config": this.rfdConfig = f; break;
+      case "ground": this.ingestGround(f); break;
       case "config": { const { type, ...rest } = f; this.config = rest; break; }
       case "ack": this.ingestAck(f); break;
     }
     this.bump();
+  }
+
+  /** The ground station's effective position — live GNSS if fixed, else config.
+   *
+   * Mirrors MissionState.ground_station() on the backend. Everything that draws
+   * or measures from the pad goes through here so the map marker, the downrange
+   * readouts and the COTS AGL baseline can never disagree about where we are.
+   * Altitude falls back independently: NMEA RMC sentences carry a position but
+   * no altitude, and blanking the configured elevation would skew COTS AGL.
+   */
+  groundStation(): GroundStation {
+    const cfg = this.config.ground_station;
+    const fallback: GroundStation = {
+      label: cfg?.label ?? "Ground Station",
+      lat: cfg?.lat ?? null,
+      lon: cfg?.lon ?? null,
+      alt_m: cfg?.alt_m ?? null,
+      source: "config",
+    };
+    const fix = this.groundFix;
+    if (!fix || this.groundFixAt == null) return fallback;
+    // A fix that stopped arriving eventually stops being the truth.
+    const ttlMs = (this.config.ui?.ground_stale_seconds ?? 15) * 1000;
+    if (Date.now() - this.groundFixAt > ttlMs) return fallback;
+    if (fix.lat == null || fix.lon == null) return fallback;
+    return {
+      label: cfg?.label ?? "Ground Station",
+      lat: fix.lat,
+      lon: fix.lon,
+      alt_m: fix.alt_m ?? cfg?.alt_m ?? null,
+      source: "gnss",
+    };
+  }
+
+  /** The landing prediction for the *current* flight, or null.
+   *
+   * A touchdown estimate cannot belong to a flight that hasn't launched, so
+   * anything still present in STANDBY is left over from a previous run — the
+   * predictor keeps republishing its last result, and the sim loops outright.
+   * Treated as absent so the pad view isn't cluttered with a stale zone on the
+   * map or a stale FINAL in the panel.
+   */
+  activeLanding(): PredictionFrame | null {
+    return this.mission?.flight_state === "STANDBY" ? null : this.landing;
   }
 
   private setMission(m: MissionFrame | null) {
@@ -163,6 +253,7 @@ export class MissionStore {
 
   private ingestSrad(f: SradFrame) {
     this.srad = f;
+    this.lastSradAt = Date.now();
     this._pushSradSeries(f);
   }
 
@@ -172,8 +263,11 @@ export class MissionStore {
     push(this.alt.x, x, MAX_POINTS);
     push(this.alt.baroAvg, f.altitude_agl_m, MAX_POINTS);
     push(this.alt.kf, (f.kf_altitude ?? 0) - (f.ground_altitude ?? 0), MAX_POINTS);
-    push(this.alt.cots, this._lastCotsAlt, MAX_POINTS);
-    if (f.gps.lon !== null && f.gps.lat !== null) {
+    // Only anchor a COTS vertex on the tick a fresh APRS altitude arrived; null
+    // otherwise so the chart connects real points rather than stepping.
+    push(this.alt.cots, this._cotsFresh ? this._lastCotsAlt : null, MAX_POINTS);
+    this._cotsFresh = false;
+    if (hasGpsFix(f.gps.lon, f.gps.lat)) {
       push(this.sradTrack, [f.gps.lon, f.gps.lat] as [number, number], MAX_TRACK);
     }
   }
@@ -183,23 +277,59 @@ export class MissionStore {
     const p = f.position;
     if (p && p.altitude_m !== null) {
       // COTS altitude is MSL-ish (ft->m); show AGL against ground_altitude.
-      const ground = this.config.ground_station?.alt_m ?? this.srad?.ground_altitude ?? 0;
+      const ground = this.groundStation().alt_m ?? this.srad?.ground_altitude ?? 0;
       this._lastCotsAlt = p.altitude_m - ground;
+      this._cotsFresh = true; // plot this point on the next SRAD tick
     }
-    if (p && p.lon !== null && p.lat !== null) {
-      push(this.cotsTrack, [p.lon, p.lat] as [number, number], MAX_TRACK);
+    if (hasGpsFix(p?.lon, p?.lat)) {
+      push(this.cotsTrack, [p!.lon!, p!.lat!] as [number, number], MAX_TRACK);
     }
+  }
+
+  // Sentence types that can carry a position — mirrors helios-ground-gps
+  // decoder.nmea.POSITION_SENTENCES and src/constants.py. VTG/GSA/GSV are
+  // forwarded as raw text with no fix and say nothing about where we are.
+  private static POSITION_SENTENCES = new Set(["GGA", "RMC", "GLL"]);
+
+  private ingestGround(f: GroundFrame) {
+    this.ground = f;
+    if (!MissionStore.POSITION_SENTENCES.has((f.sentence_type ?? "").toUpperCase())) return;
+    // Only positional sentences are authoritative about fix state.
+    this.groundFixQuality = f.fix_quality_name;
+    if (!f.position) return;
+    const merged: Partial<GroundPosition> = { ...(this.groundFix ?? {}) };
+    // Merge, don't replace: an RMC must not wipe the altitude/satellites/HDOP
+    // that the preceding GGA supplied.
+    for (const [k, v] of Object.entries(f.position)) {
+      if (v !== null && v !== undefined) (merged as Record<string, unknown>)[k] = v;
+    }
+    this.groundFix = merged;
+    this.groundFixAt = Date.now();
   }
 
   private ingestAck(f: AckFrame) {
     const idx = this.acks.findIndex((a) => a.command_id === f.command_id);
     if (idx >= 0) this.acks[idx] = f;
     else this.acks = [...this.acks, f];
-    if (f.command_type === "camera") {
-      for (const k of ["vtx_power", "runcam_power", "recording"] as const) {
-        if (k in f.payload) this.cameraState[k] = Boolean(f.payload[k]);
+    if (f.command_type === "camera") this.recomputeCameraState();
+  }
+
+  // Commanded camera state = every camera command that stuck, replayed in order.
+  // Derived on each ack rather than accumulated, because a status can go
+  // backwards: the VTX power uplink is resent until telemetry confirms it and
+  // then marked "failed", at which point the command must stop counting and the
+  // button snap back to the last state that did stick. Mirrors
+  // CommandManager._recompute_camera_state on the backend; keep the two in sync.
+  private recomputeCameraState() {
+    const rebuilt = { power: false, recording: false };
+    for (const a of this.acks) {
+      if (a.command_type !== "camera") continue;
+      if (a.status === "failed" || a.status === "error") continue;
+      for (const k of ["power", "recording"] as const) {
+        if (k in a.payload) rebuilt[k] = Boolean(a.payload[k]);
       }
     }
+    this.cameraState = rebuilt;
   }
 
   // ---- React binding ----
@@ -217,6 +347,13 @@ export class MissionStore {
 function push<T>(arr: T[], v: T, max: number) {
   arr.push(v);
   if (arr.length > max) arr.shift();
+}
+
+// A GPS fix is only valid when both lon and lat are present and non-zero. The
+// flight computer reports 0/0 as the default before it acquires a lock, so we
+// must not plot those or the track snaps to null island off West Africa.
+export function hasGpsFix(lon: number | null | undefined, lat: number | null | undefined): boolean {
+  return lon != null && lat != null && lon !== 0 && lat !== 0;
 }
 
 const stores: Partial<Record<string, MissionStore>> = {};

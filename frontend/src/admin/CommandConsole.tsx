@@ -1,94 +1,239 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Panel } from "../components/Panel";
 import { api } from "../lib/api";
 import type { MissionStore } from "../lib/store";
 import { IN_FLIGHT } from "../lib/flightmeta";
+import { RFD_FIELDS, dbmToWatts, formatWatts, validateRfd, type RfdFieldSpec } from "../lib/rfd";
 
-function CameraToggle({
-  label, field, store, operator, disabled,
-}: {
-  label: string;
-  field: "vtx_power" | "runcam_power" | "recording";
-  store: MissionStore;
-  operator: string;
-  disabled?: boolean;
+// Confirmed on/off pill driven by telemetry (srad.camera). `null` = no telemetry
+// yet, so we can't confirm the onboard state.
+function Confirmed({ value, onLabel = "ON", offLabel = "OFF", rec = false }: {
+  value: boolean | null;
+  onLabel?: string;
+  offLabel?: string;
+  rec?: boolean;
 }) {
-  const on = store.cameraState[field];
+  if (value === null) return <span className="cam-unknown mono">—</span>;
+  if (!value) return <span className="cam-off mono">{offLabel}</span>;
+  return <span className={`mono ${rec ? "cam-rec" : "cam-on"}`}>{onLabel}</span>;
+}
+
+// Single switch that powers the whole onboard camera chain (VTX + RunCam) plus
+// the RunCam recording toggle. "commanded" = last thing we uplinked; "confirmed"
+// = what the FC firmware reports back in telemetry (srad.camera).
+function CameraControls({ store, operator }: { store: MissionStore; operator: string }) {
+  const commanded = store.cameraState;               // { power, recording }
+  const confirmed = store.srad?.camera ?? null;      // { power, recording } | null
   const pending = store.acks.some((a) => a.command_type === "camera" && a.status === "pending");
+  // Recording is allowed only when the camera has power (confirmed if we have
+  // telemetry, otherwise the commanded state).
+  const powerOn = confirmed ? confirmed.power : commanded.power;
+  // Latest VTX power command. The backend resends it until telemetry confirms it
+  // and marks it failed once the retries run out (CommandManager._retry_vtx_power),
+  // so this is where "we're still trying" and "we gave up and moved the switch
+  // back" get reported — otherwise both look identical to a quiet console.
+  const lastPower = store.acks
+    .filter((a) => a.command_type === "camera" && "power" in a.payload)
+    .at(-1) ?? null;
+
+  // Debounce: disable both buttons for 1s after a press so they can't be spammed.
+  const [cooling, setCooling] = useState(false);
+  const timer = useRef<number | null>(null);
+  const send = (payload: Record<string, boolean>) => {
+    if (cooling) return;
+    setCooling(true);
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setCooling(false), 1000);
+    api.command("camera", payload, operator).catch((e) => alert((e as Error).message));
+  };
+
   return (
-    <div className="toggle-row">
-      <span>
-        <span className="upper" style={{ fontSize: 12 }}>{label}</span>
-        <br />
-        <span className="faint mono" style={{ fontSize: 10 }}>
-          commanded: {on ? "ON" : "OFF"} {pending ? "· ?" : ""}
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div className="toggle-row">
+        <span>
+          <span className="upper" style={{ fontSize: 12 }}>Camera power (VTX + RunCam)</span>
+          <br />
+          <span className="cam-status">
+            <span className="faint mono">commanded {commanded.power ? "ON" : "OFF"}{pending ? " ·" : ""}</span>
+            <span className="faint">·</span>
+            <span className="faint">confirmed</span>
+            <Confirmed value={confirmed ? confirmed.power : null} />
+          </span>
         </span>
-      </span>
-      <button
-        className={on ? "on" : ""}
-        disabled={disabled}
-        onClick={() => api.command("camera", { [field]: !on }, operator).catch((e) => alert(e.message))}
-      >
-        {on ? "ON" : "OFF"}
-      </button>
+        <button
+          className={commanded.power ? "on" : ""}
+          disabled={cooling}
+          onClick={() => send({ power: !commanded.power, ...(commanded.power ? { recording: false } : {}) })}
+        >
+          {commanded.power ? "ON" : "OFF"}
+        </button>
+      </div>
+
+      <div className="toggle-row">
+        <span>
+          <span className="upper" style={{ fontSize: 12 }}>RunCam recording</span>
+          <br />
+          <span className="cam-status">
+            <span className="faint mono">commanded {commanded.recording ? "REC" : "OFF"}</span>
+            <span className="faint">·</span>
+            <span className="faint">confirmed</span>
+            <Confirmed value={confirmed ? confirmed.recording : null} onLabel="REC" rec />
+          </span>
+        </span>
+        <button
+          className={commanded.recording ? "on" : ""}
+          disabled={!powerOn || cooling}
+          onClick={() => send({ recording: !commanded.recording })}
+        >
+          {commanded.recording ? "REC" : "OFF"}
+        </button>
+      </div>
+
+      {lastPower?.status === "sent" && lastPower.message && (
+        <div className="faint mono" style={{ fontSize: 10 }}>
+          VTX power #{lastPower.command_id}: {lastPower.message}
+        </div>
+      )}
+
+      {lastPower?.status === "failed" && (
+        <div className="errbox">
+          ✗ VTX power #{lastPower.command_id} — {lastPower.message}. Switch reset to the
+          last confirmed state; press again to retry.
+        </div>
+      )}
+
+      {!powerOn && (
+        <div className="faint" style={{ fontSize: 10 }}>
+          recording disabled while camera power is off
+        </div>
+      )}
     </div>
   );
 }
 
-// Single switch that powers the whole onboard camera chain (VTX + RunCam Split)
-// together. Powering off also clears recording so its interlock stays consistent.
-function CameraPowerToggle({ store, operator }: { store: MissionStore; operator: string }) {
-  const vtx = store.cameraState.vtx_power;
-  const runcam = store.cameraState.runcam_power;
-  const on = vtx && runcam;
-  const pending = store.acks.some((a) => a.command_type === "camera" && a.status === "pending");
-  const toggle = () =>
-    api
-      .command(
-        "camera",
-        on
-          ? { vtx_power: false, runcam_power: false, recording: false }
-          : { vtx_power: true, runcam_power: true },
-        operator,
-      )
-      .catch((e) => alert(e.message));
+// One S-register field. Blank = leave that register alone, so a command can
+// change one setting at a time (RfdConfig fields are all `optional`). Out-of-
+// range entries render an inline error and block ARM rather than being clamped
+// silently — a bad S-register write can take the ground link down.
+function RfdField({ spec, value, error, disabled, current, onChange }: {
+  spec: RfdFieldSpec;
+  value: string;
+  error?: string;
+  disabled: boolean;
+  current?: number | boolean;
+  onChange: (v: string) => void;
+}) {
+  const unit = spec.unit ? ` (${spec.unit})` : "";
+  // Sub-label doubles as the accepted-range spec until the operator gets it
+  // wrong, then it's replaced by the error. A dropdown already shows what it
+  // accepts, so it gets the label only.
+  const allowed = spec.kind === "range" ? `${spec.min}–${spec.max}${spec.unit ? ` ${spec.unit}` : ""}` : "";
+  // Selects have no placeholder, so the "leave alone" option carries the
+  // current value the way the number inputs' placeholder does.
+  const unchanged = current !== undefined ? `— unchanged (now ${current}) —` : "— unchanged —";
+  // Live unit conversion beside the input: dBm is what gets written, watts is
+  // how the radio is actually spec'd.
+  const entered = Number(value);
+  const converted =
+    spec.kind === "range" && spec.display === "watts" && value.trim() !== "" && Number.isFinite(entered)
+      ? `= ${formatWatts(dbmToWatts(entered))}`
+      : null;
+
   return (
-    <div className="toggle-row">
+    <label>
       <span>
-        <span className="upper" style={{ fontSize: 12 }}>Camera power (VTX + RunCam)</span>
-        <br />
-        <span className="faint mono" style={{ fontSize: 10 }}>
-          commanded: VTX {vtx ? "ON" : "OFF"} · RunCam {runcam ? "ON" : "OFF"} {pending ? "· ?" : ""}
-        </span>
+        {spec.label}{unit} <span className="faint">{spec.reg}</span>
       </span>
-      <button className={on ? "on" : ""} onClick={toggle}>
-        {on ? "ON" : "OFF"}
-      </button>
-    </div>
+      {spec.kind === "enum" ? (
+        <select
+          className={error ? "invalid" : ""}
+          disabled={disabled}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          <option value="">{unchanged}</option>
+          {spec.values.map((v) => (
+            <option key={v} value={String(v)}>{v}</option>
+          ))}
+        </select>
+      ) : (
+        <span className="rfd-input-row">
+          <input
+            type="number"
+            className={error ? "invalid" : ""}
+            min={spec.min}
+            max={spec.max}
+            step={1}
+            placeholder={current !== undefined ? `now ${current}` : "unchanged"}
+            disabled={disabled}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+          />
+          {converted && <span className="rfd-conv">{converted}</span>}
+        </span>
+      )}
+      {error
+        ? <span className="rfd-err">{error}</span>
+        : <span className="rfd-hint">{spec.hint ?? allowed}</span>}
+    </label>
   );
 }
 
-const RFD_FIELDS: [string, string][] = [
-  ["min_freq_khz", "Min freq (kHz)"],
-  ["max_freq_khz", "Max freq (kHz)"],
-  ["net_id", "Net ID"],
-  ["tx_power_dbm", "TX power (dBm)"],
-  ["air_speed_kbps", "Air speed (kbps)"],
-];
+// A write reconfigures the ground modem AND is uplinked to the rocket, so bad
+// settings show up as the telemetry stream simply stopping. If nothing has
+// arrived this long after a write, surface the escape hatch.
+const RFD_WATCHDOG_MS = 3000;
 
 export function CommandConsole({ store }: { store: MissionStore }) {
   const [operator, setOperator] = useState("operator");
-  const [rfd, setRfd] = useState<Record<string, number>>({});
+  // Raw text per field so "" stays "unchanged" instead of collapsing to 0.
+  const [rfd, setRfd] = useState<Record<string, string>>({});
   const [armed, setArmed] = useState(false);
   const [override, setOverride] = useState(false);
+  // When the last rfd_config write went out, and the modem's registers as they
+  // were just before it — kept so "revert to old settings" has something to send
+  // once it's wired up.
+  const [sentAt, setSentAt] = useState<number | null>(null);
+  const [previous, setPrevious] = useState<Record<string, number | null> | null>(null);
   const inFlight = IN_FLIGHT.has(store.mission?.flight_state ?? "STANDBY");
   const rfdLocked = inFlight && !override;
-  const runcamOn = store.cameraState.runcam_power;
+  // Live registers off `current_rfd_config` — the only source; empty until
+  // helios-cots-telemetry reports in.
+  const configured = store.rfdConfig?.config ?? {};
+  const liveConfig = store.rfdConfig !== null;
+
+  // Link frames arrive at ~4 Hz, but tick locally too so the watchdog still
+  // fires if the socket itself goes quiet.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (sentAt === null) return;
+    const id = window.setInterval(() => forceTick((t) => t + 1), 500);
+    return () => window.clearInterval(id);
+  }, [sentAt]);
+
+  const sradAgeMs = store.lastSradAt === null ? Infinity : Date.now() - store.lastSradAt;
+  const telemetryLost =
+    sentAt !== null && Date.now() - sentAt > RFD_WATCHDOG_MS && sradAgeMs > RFD_WATCHDOG_MS;
+
+  // Latest rfd_config command, for the confirmed-by-modem readout.
+  const lastRfdAck = store.acks.filter((a) => a.command_type === "rfd_config").at(-1) ?? null;
+
+  const check = validateRfd(rfd);
+  // Editing after arming re-arms: never execute a payload the operator hasn't
+  // seen validated in its final form.
+  const setField = (key: string, v: string) => {
+    setArmed(false);
+    setRfd({ ...rfd, [key]: v });
+  };
 
   const submitRfd = async () => {
+    const before = store.rfdConfig?.config ?? null;
     try {
-      await api.command("rfd_config", { ...rfd, write_eeprom: true, operator }, operator, override);
+      await api.command("rfd_config", check.payload, operator, override);
+      setPrevious(before);
+      setSentAt(Date.now());
       setArmed(false);
+      setRfd({});
     } catch (e) {
       alert((e as Error).message);
     }
@@ -102,36 +247,39 @@ export function CommandConsole({ store }: { store: MissionStore }) {
           <div className="dim upper" style={{ fontSize: 11, marginBottom: 6 }}>
             Onboard camera (RF uplink)
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <CameraPowerToggle store={store} operator={operator} />
-            <CameraToggle
-              label="RunCam recording" field="recording" store={store} operator={operator}
-              disabled={!runcamOn}
-            />
-          </div>
-          {!runcamOn && <div className="faint" style={{ fontSize: 10, marginTop: 4 }}>
-            recording disabled while RunCam power is off
-          </div>}
+          <CameraControls store={store} operator={operator} />
         </div>
 
         {/* RFD900x ground-modem config */}
         <div>
           <div className="dim upper" style={{ fontSize: 11, marginBottom: 6 }}>
-            RFD900x — ground modem only
+            RFD900x — ground modem + uplink
+            <span className="faint" style={{ textTransform: "none", marginLeft: 6 }}>
+              {liveConfig ? "current values from modem" : "modem not reporting — current values unknown"}
+            </span>
           </div>
           <div className="rfd-form">
-            {RFD_FIELDS.map(([key, label]) => (
-              <label key={key}>
-                {label}
-                <input
-                  type="number"
-                  disabled={rfdLocked}
-                  value={rfd[key] ?? ""}
-                  onChange={(e) => setRfd({ ...rfd, [key]: Number(e.target.value) })}
-                />
-              </label>
+            {RFD_FIELDS.map((spec) => (
+              <RfdField
+                key={spec.key}
+                spec={spec}
+                value={rfd[spec.key] ?? ""}
+                error={check.errors[spec.key]}
+                disabled={rfdLocked}
+                current={configured[spec.key] ?? undefined}
+                onChange={(v) => setField(spec.key, v)}
+              />
             ))}
           </div>
+          {!check.valid && (
+            <div className="errbox">
+              {Object.keys(check.errors).length} field
+              {Object.keys(check.errors).length > 1 ? "s are" : " is"} out of range — fix before arming
+            </div>
+          )}
+          {check.valid && check.warnings.map((w) => (
+            <div className="warnbox" key={w}>{w}</div>
+          ))}
           {inFlight && (
             <label className="warnbox" style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
@@ -140,16 +288,57 @@ export function CommandConsole({ store }: { store: MissionStore }) {
           )}
           <div className="row-actions">
             {!armed ? (
-              <button className="danger" disabled={rfdLocked} onClick={() => setArmed(true)}>
+              <button
+                className="danger"
+                disabled={rfdLocked || !check.valid || check.empty}
+                onClick={() => setArmed(true)}
+              >
                 ARM
               </button>
             ) : (
               <>
-                <button className="rec" onClick={submitRfd}>EXECUTE — write S-registers</button>
+                <button className="rec" onClick={submitRfd}>
+                  EXECUTE — write {Object.keys(check.payload).length} S-register
+                  {Object.keys(check.payload).length > 1 ? "s" : ""}
+                </button>
                 <button onClick={() => setArmed(false)}>Cancel</button>
               </>
             )}
           </div>
+
+          {/* Confirmation: helios-cots-telemetry re-publishes current_rfd_config
+              after it writes the modem, which flips the command to acknowledged. */}
+          {lastRfdAck && (
+            <div className="rfd-status">
+              {lastRfdAck.status === "acknowledged" ? (
+                <span className="cam-on">✓ ground modem confirmed #{lastRfdAck.command_id}</span>
+              ) : lastRfdAck.status === "error" ? (
+                <span className="cam-rec">✗ #{lastRfdAck.command_id} failed — {lastRfdAck.message}</span>
+              ) : (
+                <span className="faint">awaiting ground modem confirmation for #{lastRfdAck.command_id}…</span>
+              )}
+            </div>
+          )}
+
+          {telemetryLost && (
+            <div className="errbox">
+              <div>
+                No telemetry for {Number.isFinite(sradAgeMs) ? `${(sradAgeMs / 1000).toFixed(0)}s` : "the whole session"}
+                {" "}since the last write — the new settings may have broken the link.
+              </div>
+              <div className="row-actions">
+                {/* Placeholder: the pre-write registers are captured in `previous`,
+                    but nothing is sent yet. */}
+                <button
+                  className="danger"
+                  title="Not wired up yet"
+                  onClick={() => { void previous; }}
+                >
+                  Revert to old settings
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -158,7 +347,7 @@ export function CommandConsole({ store }: { store: MissionStore }) {
         <input value={operator} onChange={(e) => setOperator(e.target.value)} style={{ width: 140 }} />
       </label>
 
-      {/* Command history */}
+      {/* Command log */}
       <div className="field-table-wrap" style={{ marginTop: 8 }}>
         <table>
           <thead>

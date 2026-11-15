@@ -1,6 +1,7 @@
 // Formatting + unit helpers. Conversions mirror the backend (constants.py).
 
 export const M_TO_FT = 3.280839895;
+export const G_MS2 = 9.80665; // standard gravity; IMU accel is m/s^2 (~1 g at rest)
 
 export function fmt(n: number | null | undefined, digits = 1): string {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";

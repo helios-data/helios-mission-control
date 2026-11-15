@@ -1,35 +1,11 @@
-import { useState } from "react";
 import { Panel } from "../components/Panel";
 import { SignalIndicator } from "../components/SignalDot";
-import { api } from "../lib/api";
 import type { DataState } from "../lib/fallback";
 import type { CotsFrame, SradFrame } from "../lib/telemetry";
 import { fmt, fmtInt, fmtLatLon } from "../lib/units";
 
-function LogControls({ source }: { source: "srad" | "cots" }) {
-  const [recording, setRecording] = useState(false);
-  const [msg, setMsg] = useState("");
-  return (
-    <div className="row-actions">
-      <button onClick={async () => setMsg((await api.logNow(source) as { file?: string }).file ?? "logged")}>
-        Log now
-      </button>
-      <button
-        className={recording ? "rec" : ""}
-        onClick={async () => {
-          await api.record(source, recording ? "stop" : "start");
-          setRecording(!recording);
-        }}
-      >
-        {recording ? "● Recording — Stop" : "Record"}
-      </button>
-      <a href={`/api/logs`} target="_blank" rel="noreferrer">
-        <button>Logs ▾</button>
-      </a>
-      {msg && <span className="faint mono" style={{ fontSize: 11 }}>saved {msg}</span>}
-    </div>
-  );
-}
+// Packet capture is no longer per-panel: a single "Log now" control in the admin
+// header records SRAD + APRS + ground NMEA into one combined file (see App.tsx).
 
 function Field({ k, v, warn }: { k: string; v: string; warn?: boolean }) {
   return (
@@ -62,19 +38,48 @@ export function SradPanel({ latest, ds }: { latest: SradFrame | null; ds: DataSt
             <Field k="ground alt" v={`${fmt(latest.ground_altitude)} m`} />
             <Field k="gps" v={`${fmtLatLon(latest.gps.lat)}, ${fmtLatLon(latest.gps.lon)}`} />
             <Field k="gps fix/sats" v={`fix ${latest.gps.fix} · ${latest.gps.sats} sats`} warn={latest.gps.fix < 2} />
+            <Field k="camera" v={`VTX ${(latest.camera?.power ? "ON" : "OFF")} · REC ${(latest.camera?.recording ? "ON" : "OFF")}`} />
           </div>
         </div>
       )}
-      <LogControls source="srad" />
     </Panel>
+  );
+}
+
+// An APRS packet whose payload oneof is `raw_info` rather than `position` — a
+// status/telemetry beacon, or a position beacon sent before the tracker locked.
+// The packet is real and is logged like any other; it just doesn't locate the
+// rocket, so the panel says so instead of silently showing the last known fix.
+function NoFixChip() {
+  return (
+    <span
+      className="mono"
+      title="This APRS packet carried no position (raw info only). The packet is still received and logged; the map keeps the last known fix."
+      style={{
+        fontSize: 10, letterSpacing: "0.06em", padding: "1px 5px", borderRadius: 3,
+        border: "1px solid var(--warn)", color: "var(--warn)",
+        background: "rgba(255,176,32,0.12)",
+      }}
+    >
+      NO FIX
+    </span>
   );
 }
 
 export function CotsPanel({ latest, ds }: { latest: CotsFrame | null; ds: DataState }) {
   const stale = ds.status === "stale";
   const p = latest?.position;
+  const noFix = !!latest && !p;
   return (
-    <Panel title="COTS · TeleGPS APRS" right={<SignalIndicator label="cots" state={ds} />}>
+    <Panel
+      title="COTS · TeleGPS APRS"
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {noFix && <NoFixChip />}
+          <SignalIndicator label="cots" state={ds} />
+        </span>
+      }
+    >
       {ds.status === "no_data" || !latest ? (
         <div className="empty-note upper">No packets received</div>
       ) : (
@@ -97,7 +102,6 @@ export function CotsPanel({ latest, ds }: { latest: CotsFrame | null; ds: DataSt
           </div>
         </div>
       )}
-      <LogControls source="cots" />
     </Panel>
   );
 }

@@ -9,6 +9,11 @@ RUN npm run build
 # ---- Python runtime stage ----
 FROM python:3.13-slim
 ENV PYTHONUNBUFFERED=1
+# `uv run` auto-syncs the project before running, which would try to build+install
+# the root package (needs README.md, not shipped in the image) and fail. The venv is
+# fully prepared by the explicit `uv sync` below, so skip that implicit sync entirely.
+# Applies to both the proto compile step and the entrypoint's `uv run uvicorn`.
+ENV UV_NO_SYNC=1
 # build-essential + protobuf-compiler/libprotobuf-dev provide the system `protoc`
 # used to compile the betterproto2 protos below; git is needed for submodule/SDK installs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,22 +39,33 @@ RUN uv sync --frozen --extra dev --no-install-project
 COPY helios-python-sdk/ ./helios-python-sdk/
 COPY falcon-protos/ ./falcon-protos/
 COPY protos-proposed/ ./protos-proposed/
+COPY helios-protos/ ./helios-protos/
 # Install the Helios SDK (its build hook regenerates protos, incl. AprsPacket,
 # from the nested helios-protos submodule) — only if the submodule is present.
 RUN if [ -f helios-python-sdk/pyproject.toml ]; then uv pip install -e helios-python-sdk; fi
 
 # Application source + compiled protos (betterproto2) + built frontend.
 COPY src/ ./src/
-# Compile falcon-protos + protos-proposed with the system protoc. The betterproto2
-# plugin (protoc-gen-python_betterproto2, installed by betterproto2-compiler into
-# .venv/bin) is auto-discovered from PATH under `uv run`. Skipped in STANDALONE
-# builds where the proto submodules are absent.
+# Compile falcon-protos + helios-protos + protos-proposed with the system protoc.
+# The betterproto2 plugin (protoc-gen-python_betterproto2, installed by
+# betterproto2-compiler into .venv/bin) is auto-discovered from PATH under
+# `uv run`. Skipped in STANDALONE builds where the proto submodules are absent.
+#
+# KEEP IN SYNC WITH `make protos` — this duplicates that command (system protoc
+# here vs grpc_tools there). Leaving helios-protos out of this invocation while
+# the Makefile compiled it is what produced an image with no
+# src/generated/helios/transport: AprsPacket + NmeaSentence went missing and the
+# bridge could not start. helios-protos declare `package helios.transport`, so
+# they land in that subpackage; falcon-protos declare no package and stay at the
+# top level.
 RUN if [ -f falcon-protos/TelemetryPacket.proto ]; then \
       mkdir -p src/generated && \
       uv run protoc \
-        -I falcon-protos -I protos-proposed \
+        -I falcon-protos -I protos-proposed -I helios-protos \
         --python_betterproto2_out=src/generated \
-        $(find falcon-protos protos-proposed -name '*.proto'); \
+        $(find falcon-protos protos-proposed helios-protos -name '*.proto'); \
+      test -f src/generated/helios/transport/__init__.py \
+        || { echo "ERROR: helios-protos did not compile — AprsPacket/NmeaSentence would be missing"; exit 1; }; \
     else echo "protos not compiled (submodule absent) — STANDALONE only"; fi
 
 COPY --from=frontend /build/dist ./frontend/dist

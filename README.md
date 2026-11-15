@@ -17,8 +17,14 @@ Two telemetry streams are consumed (§1.2 of the build plan):
 
 | Stream | Address | Event | Payload |
 |---|---|---|---|
-| SRAD | `Helios.FALCON.Telemetry` | `telemetry` | `TelemetryPacket` (falcon-protos) |
-| COTS | `Helios.Services.TeleGPS` | `aprs` | `AprsPacket` (helios-protos) |
+| SRAD | `Helios.FALCON.SRAD_Telemetry` | `telemetry` | `TelemetryPacket` (falcon-protos) |
+| COTS | `Helios.FALCON.APRS_Telemetry` | `aprs` | `AprsPacket` (helios-protos) |
+| Ground GNSS | `Helios.Services.GroundGPS` | `ground_position` | `NmeaSentence` (helios-protos) |
+| Landing | `Helios.Services.LandingPredictor` | `landing_prediction` | `LandingPrediction` (protos-proposed) |
+
+The last two are **optional nodes**: each subscription is isolated and
+self-retrying, so a predictor or receiver that isn't deployed never tears down
+the telemetry streams.
 
 ## Quick start (no hardware, no submodules)
 
@@ -77,19 +83,43 @@ admin REST ──▶ CommandManager ──publish──▶ core (GroundCommand) 
 
 See [`MISSION_CONTROL_PLAN.md`](MISSION_CONTROL_PLAN.md) for the full design.
 
+## Ground-station position
+
+The ground station's position comes from the **`Helios.Services.GroundGPS` node**
+(`ground_position` → `NmeaSentence`), which publishes one frame per decoded NMEA
+sentence — so the pad marker, the downrange/bearing readouts and the COTS AGL
+baseline all track the receiver live.
+
+`ground_station` in `mission_config.json` is the **fallback**, used whenever the
+live source can't locate us:
+
+- the GroundGPS node isn't running (or hasn't published yet),
+- the sentence carries only a `raw_sentence` (no position payload),
+- the fix quality is `INVALID`, or the coordinates are the 0/0 unset default.
+
+The admin Configuration panel tags the pad row `GNSS` or `CONFIG` so the active
+source is never a guess, and pre-launch the Landing Prediction slot shows the
+receiver's own stats (fix quality, satellites, HDOP) instead of an empty
+"Awaiting prediction". Altitude falls back independently — NMEA `RMC` sentences
+carry a position but no altitude, and blanking the configured elevation would
+skew every COTS AGL readout. Nothing here contacts the internet; the only
+outbound request the backend makes is for map tiles.
+
 ## Configuration
 
 `mission_config.json` (repo root) is the **base** source of truth for callsign,
-RFD900x settings, ground-station coordinates, UI refresh/stale timeouts, and the
-`video_source` mode. Editable subset is exposed on the admin console; changes are
-persisted and broadcast.
+RFD900x settings, fallback ground-station coordinates, and UI refresh/stale
+timeouts.
+Editable subset is exposed on the admin console; changes are persisted and
+broadcast. (`ui.video_source` is **not** a config knob — the backend derives it
+from the run mode; see [Video](#video-overlay).)
 
 **Launcher override (Open Question 3).** helios-launcher can supply the
 per-rocket parameters instead, by **linking a file** into the container (declared
 in [`config.json`](config.json) exactly like a volume, at
 `/app/config/mission_config.json`; override the path with `MISSION_CONFIG`). That
 file is **deep-merged on top of** the bundled defaults, so the launcher only
-carries the fields it owns (callsign, apogee, `ground_station`, `rfd900x`) while
+carries the fields it owns (callsign, apogee, `ground_station`) while
 UI-only defaults fall through. The intended layout is the rocket file with all of
 `mission_config.json`'s fields at the top level **beside** a `nodes` object (the
 launcher's component tree): the backend reads the top-level fields and ignores
@@ -102,20 +132,20 @@ bundled `mission_config.json` for testing. See
 ## Video (`/overlay`)
 
 The onboard VTX feed enters the PC as a **USB capture card (UVC device)**. Capture
-cards are single-consumer, so three modes are supported via `ui.video_source`:
+cards are single-consumer, so the method is chosen by **run mode** (the backend
+sets `ui.video_source` in the served config — it is not user-editable):
 
-- `transparent-window` *(default)* — overlay leaves a chroma-keyed region; OBS
-  owns the card and composites the feed behind it. Most robust for the stream.
-- `local-capture` — page grabs the device via `getUserMedia()` (localhost only).
-  **Not usable in OBS**: OBS's embedded browser blocks `getUserMedia`, so this
-  mode fails with `NotAllowedError` as a browser source. Use `transparent-window`
-  or `webrtc-url` for OBS; `local-capture` is for viewing on the host machine.
-- `webrtc-url` — a **go2rtc** sidecar owns `/dev/videoX` and restreams it as
-  WebRTC; the overlay plays it via a built-in **WHEP client** (`src/lib/whep.ts`)
-  and OBS can pull the same stream — multiple consumers, one device owner.
+- `webrtc-url` *(production / LIVE)* — a separate **go2rtc Video node** (its own
+  launcher container) owns `/dev/videoX` and restreams it as WebRTC. The overlay
+  plays it via a built-in **WHEP client** (`src/lib/whep.ts`) from `ui.video_url`
+  (e.g. `http://localhost:1984/api/whep?src=cloudburst`), and OBS can pull the
+  same stream — multiple consumers, one device owner.
+- `local-capture` *(STANDALONE only)* — no go2rtc node is running, so the page
+  grabs the device directly via `getUserMedia()` (localhost only). **Not usable
+  in OBS**: OBS's embedded browser blocks `getUserMedia`.
 
-All three fall back to a designed **NO SIGNAL** panel (`webrtc-url` auto-retries
-every 3 s). The public livestream must never depend on the GUI being healthy.
+Both fall back to a designed **NO SIGNAL** panel (`webrtc-url` auto-retries every
+3 s). The public livestream must never depend on the GUI being healthy.
 
 ### go2rtc sidecar (webrtc-url mode)
 

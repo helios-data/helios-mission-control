@@ -13,27 +13,96 @@ from typing import Any
 
 from .hub import ConnectionHub
 from .state import MissionState
-from .telemetry import MIN_PACKET_BYTES, normalize_cots, normalize_srad
+from .telemetry import (
+    MIN_PACKET_BYTES,
+    normalize_cots,
+    normalize_ground,
+    normalize_landing,
+    normalize_rfd_config,
+    normalize_srad,
+)
 
 log = logging.getLogger("mission-control.bridge")
 
-SRAD_ADDRESS = "Helios.FALCON.Telemetry"
+SRAD_ADDRESS = "Helios.FALCON.SRAD_Telemetry"
 SRAD_EVENT = "telemetry"
-COTS_ADDRESS = "Helios.Services.TeleGPS"
+COTS_ADDRESS = "Helios.FALCON.APRS_Telemetry"
 COTS_EVENT = "aprs"
-NODE_URI = "Helios.Services.MissionControl"
+# Landing predictor (separate Helios node; optional — may not be running).
+LANDING_ADDRESS = "Helios.Services.LandingPredictor"
+LANDING_EVENT = "landing_prediction"
+# Operator wind override we publish *to* the predictor (it subscribes to this).
+LANDING_COMMAND_EVENT = "landing_config"
+# Ground-station GNSS receiver (separate Helios node; optional). Publishes an
+# NmeaSentence per decoded sentence, so this streams continuously and the ground
+# station's position tracks it live. Without it, the configured coordinates stand.
+GROUND_ADDRESS = "Helios.Services.GroundGPS"
+GROUND_EVENT = "ground_position"
+# Ground modem's current S-registers, published by helios-cots-telemetry (which
+# owns the RFD serial port): once at startup, then again after each write it
+# applies. Same address we publish `command` on, since it's the same node.
+RFD_CONFIG_ADDRESS = SRAD_ADDRESS
+RFD_CONFIG_EVENT = "current_rfd_config"
+NODE_URI = "Helios.Services.Mission_Control"
+
+# Retry cadence for the (optional) landing-prediction subscription, kept isolated
+# so a missing/idle predictor never tears down the SRAD/COTS subscriptions.
+LANDING_RETRY_S = 5.0
+# Same isolation for GroundGPS: a receiver that isn't deployed yet must never
+# tear down the telemetry subscriptions.
+GROUND_RETRY_S = 5.0
+
+# The one-shot seed of `current_rfd_config` races helios-cots-telemetry's startup
+# — that node may not have registered its address or published yet when we
+# connect. Retry on a 1s cadence, bounded, then give up and rely on the
+# subscription (which picks up the next publish whenever it happens).
+RFD_SEED_RETRY_S = 1.0
+RFD_SEED_MAX_TRIES = 30
+RFD_CONFIG_RETRY_S = 5.0
+
+# Bound the one-shot seed get_event. If a component (e.g. TeleGPS) hasn't
+# registered its address yet, the core replies with event_error and the SDK
+# never resolves the pending future — so an unbounded seed would hang forever
+# and the subscriptions below (in the gather) would never start. See _seed_latest.
+SEED_TIMEOUT_S = 2.0
 
 
-def _load_proto_classes() -> tuple[Any, Any]:
-    """Import the generated betterproto packet classes (raises if missing)."""
+def _load_aprs_class() -> Any | None:
+    """The AprsPacket class, preferring our own compiled helios-protos.
+
+    Falls back to the SDK's generated copy, then to ``None``. It must degrade
+    rather than raise: APRS is one of four independent streams, and an image
+    built without helios-protos should still fly SRAD, NMEA and the command path
+    instead of losing everything. (That regression is exactly what happened when
+    this import was made unconditional — see `run`.)
+    """
+    try:
+        from src.generated.helios.transport import AprsPacket  # noqa: PLC0415 - lazy by design
+
+        return AprsPacket
+    except ImportError:
+        pass
+    try:
+        from helios.generated.helios.transport import AprsPacket  # type: ignore  # noqa: PLC0415
+
+        log.warning(
+            "helios-protos AprsPacket not compiled into src/generated; falling back to the "
+            "SDK's copy. Run `make protos` (or check the image build compiles -I helios-protos)."
+        )
+        return AprsPacket
+    except ImportError:
+        log.error(
+            "no AprsPacket available from src.generated.helios.transport or the SDK — "
+            "COTS/APRS disabled until `make protos`. Other streams are unaffected."
+        )
+        return None
+
+
+def _load_telemetry_class() -> Any:
+    """The TelemetryPacket class (falcon-protos). Raises if it isn't compiled."""
     from src.generated import TelemetryPacket  # noqa: PLC0415 - lazy by design
 
-    try:
-        from src.generated import AprsPacket  # type: ignore  # noqa: PLC0415
-    except ImportError:
-        # SDK ships a generated AprsPacket; prefer it (as helios-dashboard does).
-        from helios.generated.helios.transport import AprsPacket  # type: ignore  # noqa: PLC0415
-    return TelemetryPacket, AprsPacket
+    return TelemetryPacket
 
 
 def _proto_fields(cls: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -49,16 +118,22 @@ class HeliosBridge:
         self.client: Any = None
         self._telemetry_cls: Any = None
         self._aprs_cls: Any = None
-        self.commands: Any = None  # set by main._attach_bridge_publisher
 
     async def run(self) -> None:
         from helios import HeliosClient  # noqa: PLC0415
 
-        self._telemetry_cls, self._aprs_cls = _load_proto_classes()
         cfg = self.state.config
         backoff = 1.0
         while True:
             try:
+                # Loaded inside the loop, not before it. Hoisted out, a missing
+                # generated class raised straight out of run(), killing the task
+                # before it ever connected — so SRAD, COTS, NMEA *and* the
+                # command path all went dead at once with no retry and no
+                # reconnect. In here it is just another startup failure: logged,
+                # backed off, retried.
+                self._telemetry_cls = _load_telemetry_class()
+                self._aprs_cls = _load_aprs_class()
                 self.client = HeliosClient(
                     core_address=cfg.get("core_address", "Helios"),
                     core_port=cfg.get("core_port", 5000),
@@ -72,7 +147,10 @@ class HeliosBridge:
                 await asyncio.gather(
                     self._subscribe_srad(),
                     self._subscribe_cots(),
-                    self._subscribe_acks(),
+                    self._subscribe_landing(),
+                    self._subscribe_ground(),
+                    self._seed_rfd_config(),
+                    self._subscribe_rfd_config(),
                     self._housekeeping(),
                 )
             except asyncio.CancelledError:
@@ -93,12 +171,15 @@ class HeliosBridge:
              self.state.record_cots_error),
         ):
             try:
-                ev = await self.client.get_event(address=addr, event_name=event)
+                ev = await asyncio.wait_for(
+                    self.client.get_event(address=addr, event_name=event),
+                    timeout=SEED_TIMEOUT_S,
+                )
                 if ev and getattr(ev, "data", None):
                     frame = parse(ev.data)
                     if frame is not None:
                         await self.hub.broadcast(ingest(frame))
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - incl. TimeoutError; count + move on so subscriptions start
                 on_err()
 
     async def _subscribe_srad(self) -> None:
@@ -109,6 +190,8 @@ class HeliosBridge:
                     await self.hub.broadcast(self.state.ingest_srad(frame))
 
     async def _subscribe_cots(self) -> None:
+        if self._aprs_cls is None:
+            return  # no AprsPacket compiled; the other streams carry on regardless
         async with self.client.subscribe_event(address=COTS_ADDRESS, event_name=COTS_EVENT) as events:
             async for event in events:
                 frame = self._parse_cots(event.data)
@@ -135,19 +218,199 @@ class HeliosBridge:
             self.state.record_cots_error()
             return None
 
+    # ---- landing prediction (optional predictor node) --------------------
+    async def _subscribe_landing(self) -> None:
+        """Subscribe to the LandingPredictor node, isolated + self-retrying.
+
+        The predictor is a separate optional node, so its subscription runs in its
+        own retry loop: if the address isn't registered yet (predictor not running)
+        or the stream drops, we back off and retry here instead of letting the
+        error propagate into the gather and cycle the telemetry subscriptions.
+        """
+        try:
+            from src.generated import LandingPrediction  # noqa: PLC0415 - lazy by design
+        except ImportError:
+            log.warning(
+                "LandingPrediction proto not compiled; landing predictions disabled "
+                "until `make protos` (see protos-proposed/landing_prediction.proto)"
+            )
+            return
+        while True:
+            try:
+                async with self.client.subscribe_event(
+                    address=LANDING_ADDRESS, event_name=LANDING_EVENT
+                ) as events:
+                    async for event in events:
+                        frame = self._parse_landing(LandingPrediction, event.data)
+                        if frame is not None:
+                            await self.hub.broadcast(self.state.ingest_landing(frame))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - predictor optional; retry, don't tear down telemetry
+                log.warning(
+                    "landing-prediction subscription error (%s); retrying in %.0fs",
+                    exc, LANDING_RETRY_S,
+                )
+                await asyncio.sleep(LANDING_RETRY_S)
+
+    def _parse_landing(self, cls: Any, data: bytes) -> dict[str, Any] | None:
+        if not data:
+            return None
+        try:
+            return normalize_landing(cls.parse(data))
+        except Exception:  # noqa: BLE001 - a bad prediction frame must not drop the stream
+            return None
+
+    # ---- ground-station GNSS (ground_position) ---------------------------
+    async def _subscribe_ground(self) -> None:
+        """Subscribe to the GroundGPS node, isolated + self-retrying.
+
+        Optional, exactly like the predictor: the event may not exist yet (node
+        not deployed), in which case we simply keep retrying and the configured
+        ground-station coordinates remain in force. Every decoded sentence is
+        ingested — including no-fix ones — so the admin panel can distinguish
+        "receiver alive, not locked" from "node not running".
+        """
+        try:
+            from src.generated.helios.transport import (
+                NmeaSentence,  # noqa: PLC0415 - lazy by design
+            )
+        except ImportError:
+            log.warning(
+                "NmeaSentence proto not compiled; live ground-station position disabled "
+                "until `make protos` (helios-protos/transport/nmea.proto). "
+                "Falling back to the configured ground_station coordinates."
+            )
+            return
+        while True:
+            try:
+                async with self.client.subscribe_event(
+                    address=GROUND_ADDRESS, event_name=GROUND_EVENT
+                ) as events:
+                    async for event in events:
+                        frame = self._parse_ground(NmeaSentence, event.data)
+                        if frame is not None:
+                            await self.hub.broadcast(self.state.ingest_ground(frame))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - optional node; retry, don't tear down telemetry
+                log.warning(
+                    "%s subscription error (%s); retrying in %.0fs",
+                    GROUND_EVENT, exc, GROUND_RETRY_S,
+                )
+                await asyncio.sleep(GROUND_RETRY_S)
+
+    def _parse_ground(self, cls: Any, data: bytes) -> dict[str, Any] | None:
+        if not data:
+            return None
+        try:
+            return normalize_ground(cls.parse(data))
+        except Exception:  # noqa: BLE001 - a bad sentence must not drop the stream
+            self.state.ground_link.mark_error()
+            return None
+
+    # ---- ground modem config (current_rfd_config) ------------------------
+    def _rfd_config_cls(self) -> Any | None:
+        try:
+            from src.generated import RfdConfig  # noqa: PLC0415 - lazy by design
+        except ImportError:
+            log.warning(
+                "RfdConfig proto not compiled; ground-modem config display disabled "
+                "until `make protos`"
+            )
+            return None
+        return RfdConfig
+
+    async def _seed_rfd_config(self) -> None:
+        """Pull the modem's current S-registers with get_event, retrying on a 1s cadence.
+
+        helios-cots-telemetry publishes this once on startup, so we may well
+        connect before it exists. Retry up to RFD_SEED_MAX_TRIES, then stop and
+        let _subscribe_rfd_config catch the next publish — an unbounded loop here
+        would hammer the core forever when the node simply isn't deployed.
+        """
+        cls = self._rfd_config_cls()
+        if cls is None:
+            return
+        for attempt in range(1, RFD_SEED_MAX_TRIES + 1):
+            if self.state.rfd_config_latest is not None:
+                return  # the subscription beat us to it
+            try:
+                ev = await asyncio.wait_for(
+                    self.client.get_event(
+                        address=RFD_CONFIG_ADDRESS, event_name=RFD_CONFIG_EVENT
+                    ),
+                    timeout=SEED_TIMEOUT_S,
+                )
+                if ev and getattr(ev, "data", None):
+                    frame = self._parse_rfd_config(cls, ev.data)
+                    if frame is not None:
+                        await self.hub.broadcast(self.state.ingest_rfd_config(frame))
+                        log.info("seeded ground-modem config after %d attempt(s)", attempt)
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - incl. TimeoutError; node may not be up yet
+                pass
+            await asyncio.sleep(RFD_SEED_RETRY_S)
+        log.warning(
+            "no %s from %s after %d attempts; waiting on the subscription instead",
+            RFD_CONFIG_EVENT, RFD_CONFIG_ADDRESS, RFD_SEED_MAX_TRIES,
+        )
+
+    async def _subscribe_rfd_config(self) -> None:
+        """Live ground-modem config updates, self-retrying like the predictor.
+
+        helios-cots-telemetry re-publishes after every write it applies, which is
+        what acknowledges an rfd_config command. Isolated retry loop so a node
+        that isn't running never tears down the telemetry subscriptions.
+        """
+        cls = self._rfd_config_cls()
+        if cls is None:
+            return
+        while True:
+            try:
+                async with self.client.subscribe_event(
+                    address=RFD_CONFIG_ADDRESS, event_name=RFD_CONFIG_EVENT
+                ) as events:
+                    async for event in events:
+                        frame = self._parse_rfd_config(cls, event.data)
+                        if frame is not None:
+                            await self.hub.broadcast(self.state.ingest_rfd_config(frame))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - optional node; retry, don't tear down telemetry
+                log.warning(
+                    "%s subscription error (%s); retrying in %.0fs",
+                    RFD_CONFIG_EVENT, exc, RFD_CONFIG_RETRY_S,
+                )
+                await asyncio.sleep(RFD_CONFIG_RETRY_S)
+
+    def _parse_rfd_config(self, cls: Any, data: bytes) -> dict[str, Any] | None:
+        if not data:
+            return None
+        try:
+            return normalize_rfd_config(cls.parse(data))
+        except Exception:  # noqa: BLE001 - a bad config frame must not drop the stream
+            log.warning("could not parse %s payload", RFD_CONFIG_EVENT)
+            return None
+
     # ---- command path (§5) ----------------------------------------------
     async def publish_command(
-        self, command_id: int, cmd_type: str, payload: dict[str, Any], commands: Any
+        self, command_id: int, cmd_type: str, payload: dict[str, Any]
     ) -> None:
-        """Serialize a GroundCommand (proposed protos) and publish it on the core.
+        """Serialize a GroundCommand (falcon-protos) and publish it on the core.
 
         RFD config + camera control both publish on the FALCON telemetry address
         with event_name='command'; helios-cots-telemetry (owner of the RFD serial
-        port) consumes it and replies with 'command_ack' (§5). Requires
-        `make protos` to have compiled protos-proposed/ground_command.proto.
+        port) consumes it — RFD config is applied to the ground modem, camera
+        control is uplinked to FALCON over RF. There is no separate command_ack:
+        the onboard camera state is confirmed via TelemetryPacket
+        (runcam_power / runcam_recording, surfaced as srad.camera). Requires
+        `make protos` to have compiled falcon-protos/GroundCommand.proto.
         """
         try:
-            from src.generated.helios.ground import (  # noqa: PLC0415
+            from src.generated import (  # noqa: PLC0415
                 CameraControl,
                 GroundCommand,
                 RfdConfig,
@@ -155,7 +418,7 @@ class HeliosBridge:
         except ImportError as exc:
             raise RuntimeError(
                 "GroundCommand proto not compiled; run `make protos` after adding "
-                "the falcon-protos submodule (see protos-proposed/ground_command.proto)"
+                "the falcon-protos submodule (GroundCommand.proto now lives there)"
             ) from exc
 
         cmd = GroundCommand(command_id=command_id, issued_at_ms=int(payload.get("issued_at_ms", 0)),
@@ -163,29 +426,44 @@ class HeliosBridge:
         if cmd_type == "rfd_config":
             cmd.rfd_config = RfdConfig(**_proto_fields(RfdConfig, payload))
         elif cmd_type == "camera":
-            cmd.camera = CameraControl(**_proto_fields(CameraControl, payload))
+            # A single switch powers the VTX + RunCam together (vtx_runcam_power);
+            # recording maps to camera_recording. Both optional so one command can
+            # change one thing at a time.
+            cam = CameraControl()
+            if "power" in payload:
+                cam.vtx_runcam_power = bool(payload["power"])
+            if "recording" in payload:
+                cam.camera_recording = bool(payload["recording"])
+            cmd.camera = cam
         await self.client.publish_event(
             event_name="command", data=bytes(cmd), override_address=SRAD_ADDRESS,
         )
 
-    async def _subscribe_acks(self) -> None:
+    async def publish_landing_config(self, payload: dict[str, Any]) -> None:
+        """Serialize a LandingConfig and publish it to the LandingPredictor node.
+
+        The predictor subscribes to `landing_config` on its own address; today the
+        only field that matters is the wind override (mode + manual speed/dir).
+        Requires `make protos` to have compiled protos-proposed/landing_prediction.proto.
+        """
         try:
-            from src.generated.helios.ground import CommandAck  # noqa: PLC0415
-        except ImportError:
-            log.warning("CommandAck proto not compiled; acks disabled until `make protos`")
-            return
-        async with self.client.subscribe_event(
-            address=SRAD_ADDRESS, event_name="command_ack"
-        ) as events:
-            async for event in events:
-                try:
-                    ack = CommandAck.parse(event.data)
-                except Exception:  # noqa: BLE001
-                    continue
-                if self.commands is not None:
-                    await self.commands.deliver_ack(
-                        ack.command_id, bool(ack.success), ack.message or ""
-                    )
+            from src.generated import LandingConfig  # noqa: PLC0415 - lazy by design
+        except ImportError as exc:
+            raise RuntimeError(
+                "LandingConfig proto not compiled; run `make protos` "
+                "(protos-proposed/landing_prediction.proto)"
+            ) from exc
+
+        cfg = LandingConfig(
+            issued_at_ms=int(payload.get("issued_at_ms", 0)),
+            operator=str(payload.get("operator", "")),
+            wind_source_mode=str(payload.get("wind_source_mode", "live")),
+            wind_speed_ms=float(payload.get("wind_speed_ms") or 0.0),
+            wind_dir_deg=float(payload.get("wind_dir_deg") or 0.0),
+        )
+        await self.client.publish_event(
+            event_name=LANDING_COMMAND_EVENT, data=bytes(cfg), override_address=LANDING_ADDRESS,
+        )
 
     async def _housekeeping(self) -> None:
         """Emit link + mission frames at ~4 Hz so ages/rates stay fresh."""

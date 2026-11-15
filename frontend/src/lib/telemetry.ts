@@ -32,6 +32,10 @@ export interface SradFrame {
   baro0: Baro;
   baro1: Baro;
   ground_altitude: number;
+  // Onboard camera status reported by the FC firmware (VTX/RunCam power switch +
+  // recording). This is the confirmation for camera commands — telemetry-baked,
+  // not a separate CommandAck.
+  camera: { power: boolean; recording: boolean };
   gps: {
     lat: number | null;
     lon: number | null;
@@ -45,6 +49,7 @@ export interface SradFrame {
   altitude_agl_m: number;
   altitude_degraded: boolean;
   mach: number;
+  g_force: number | null; // magnitude of accel vector, in g
   t_plus_s: number | null;
 }
 
@@ -87,6 +92,52 @@ export interface LinkFrame {
   core_connected: boolean;
   srad: LinkSourceSnap;
   cots: LinkSourceSnap;
+  landing?: LinkSourceSnap; // Helios.Services.LandingPredictor freshness (optional node)
+  ground?: LinkSourceSnap;  // Helios.Services.GroundGPS freshness (optional node)
+}
+
+// Landing prediction (Helios.Services.LandingPredictor -> `landing_prediction`).
+// Mirrors LandingPrediction in protos-proposed/landing_prediction.proto, normalized
+// by src/telemetry.py:normalize_landing. Points are {lat,lon}; 0/0 are dropped.
+export interface LandingPoint {
+  lat: number;
+  lon: number;
+}
+
+export interface PredictionFrame {
+  type: "prediction";
+  based_on_packet_counter: number;
+  computed_at_ms: number;
+  final: boolean;
+  best_estimate: LandingPoint | null;
+  dispersion_cloud: LandingPoint[];
+  ellipse_50: LandingPoint[];
+  ellipse_90: LandingPoint[];
+  current_lat: number | null;
+  current_lon: number | null;
+  current_source: string | null;
+  wind_source: string | null;
+  descent_model: string | null;
+  current_alt_agl: number | null;
+  flight_state: number | null;
+  status: string | null; // "not_descending" | "predicting" | "final"
+  // Actual wind feeding the estimate: speed (m/s) + met direction it comes FROM
+  // (deg true). Null until the predictor publishes them; "manual" values echo an
+  // operator override (see LandingConfigFrame).
+  wind_speed_ms: number | null;
+  wind_dir_deg: number | null;
+}
+
+// Operator wind override sent to Helios.Services.LandingPredictor, echoed back on
+// the `landing_config` event so every client (and a reloading one, via snapshot)
+// reflects the current mode. Mirrors LandingConfig in the proto + POST /api/landing/config.
+export interface LandingConfigFrame {
+  type: "landing_config";
+  issued_at_ms: number;
+  operator: string;
+  wind_source_mode: "live" | "manual";
+  wind_speed_ms: number;
+  wind_dir_deg: number;
 }
 
 export interface Transition {
@@ -118,11 +169,21 @@ export interface MissionFrame {
   max_altitude_msl_m: number;
   max_velocity_ms: number;
   max_mach: number;
+  max_g: number;
   apogee: { altitude_agl_m: number; at_epoch: number; t_plus_s: number | null } | null;
   events: MissionEvent[];
   transitions: Transition[];
 }
 
+// Command log entry. There is no CommandAck proto any more: a command is "sent"
+// once published, then flips to "acknowledged" when telemetry (srad.camera)
+// confirms the commanded state took effect. "error" = publish failed. RFD config
+// is ground-local (no telemetry confirmation), so it stays "sent".
+//
+// "failed" is VTX power only: that command is resent every
+// commands.vtx_power.ack_timeout_seconds until telemetry confirms it, and marked
+// failed after max_retries resends — at which point it stops counting toward the
+// commanded camera state (see MissionStore.recomputeCameraState).
 export interface AckFrame {
   type: "ack";
   command_id: number;
@@ -130,8 +191,54 @@ export interface AckFrame {
   payload: Record<string, unknown>;
   operator: string;
   issued_at: number;
-  status: "pending" | "ok" | "error" | "timeout";
+  status: "pending" | "sent" | "acknowledged" | "failed" | "error";
   message: string;
+}
+
+// NmeaPosition.FixQuality (helios-protos). INVALID means the receiver has no
+// lock, so the sentence's coordinates are meaningless and the configured
+// ground_station stands in. Mirrors NMEA_FIX_QUALITY in src/constants.py.
+export type NmeaFixQuality =
+  | "INVALID" | "GPS" | "DGPS" | "PPS" | "RTK_FIXED" | "RTK_FLOAT"
+  | "ESTIMATED" | "MANUAL" | "SIMULATION" | "UNKNOWN";
+
+export interface GroundPosition {
+  lat: number;
+  lon: number;
+  alt_m: number | null;          // GGA only — RMC carries no altitude
+  geoid_separation_m: number | null;
+  course: number | null;
+  speed_knots: number | null;
+  speed_ms: number | null;
+  sats: number | null;
+  hdop: number | null;
+}
+
+// `ground_position` from Helios.Services.GroundGPS — one per decoded NMEA
+// sentence, so this streams continuously and the ground station moves with it.
+// `position` is null when the sentence carries no usable fix (raw_sentence only,
+// INVALID fix quality, or 0/0); consumers then fall back to config.ground_station.
+export interface GroundFrame {
+  type: "ground";
+  talker_id: string | null;
+  sentence_type: string | null;  // GGA / RMC / VTG / ...
+  checksum_valid: boolean;
+  timestamp: number | null;  // epoch seconds; GGA/RMC always carry a UTC time
+  fix_quality: number;
+  fix_quality_name: NmeaFixQuality;
+  position: GroundPosition | null;
+  raw_sentence: string | null;
+  received_at: number;
+}
+
+// The ground station's effective position: live GNSS when there's a fix,
+// otherwise the configured fallback. Resolved by MissionStore.groundStation().
+export interface GroundStation {
+  label: string;
+  lat: number | null;
+  lon: number | null;
+  alt_m: number | null;
+  source: "gnss" | "config";
 }
 
 export interface MissionConfig {
@@ -142,14 +249,33 @@ export interface MissionConfig {
   expected_apogee_m?: number;
   gyro_units?: "deg" | "rad"; // units of TelemetryPacket gyro_x/y/z (assumed deg/s)
   ground_station?: { label?: string; lat: number; lon: number; alt_m: number };
-  rfd900x?: Record<string, number | boolean>;
+  // No rfd900x here: the ground modem's registers come from the modem itself,
+  // on `current_rfd_config` (see RfdConfigFrame), not from the config file.
   ui?: {
     refresh_hz?: number;
     srad_stale_seconds?: number;
     cots_stale_seconds?: number;
-    video_source?: "transparent-window" | "local-capture" | "webrtc-url";
-    video_url?: string; // WHEP endpoint for webrtc-url mode (go2rtc sidecar)
+    // How long a GNSS fix stays authoritative after the last positional
+    // sentence, before the ground station reverts to the configured coordinates.
+    ground_stale_seconds?: number;
+    sponsor_rotate_seconds?: number; // dwell per sponsor section on the overlay
+    // Set by the backend from run mode, not user-edited:
+    //   webrtc-url    -> WHEP from the go2rtc Video node (production)
+    //   local-capture -> browser reads the capture card directly (STANDALONE)
+    video_source?: "webrtc-url" | "local-capture";
+    video_url?: string; // WHEP endpoint for webrtc-url mode (go2rtc node)
   };
+}
+
+// Ground modem's actual S-registers, reported by helios-cots-telemetry on the
+// `current_rfd_config` event (once at startup, then after every write it
+// applies) and normalized by src/telemetry.py:normalize_rfd_config. Every field
+// is optional in RfdConfig, so an unreported register is null — which must read
+// as "unknown", not as 0.
+export interface RfdConfigFrame {
+  type: "rfd_config";
+  config: Record<string, number | null>;
+  received_at: number; // epoch seconds
 }
 
 export interface SnapshotFrame {
@@ -159,6 +285,10 @@ export interface SnapshotFrame {
   mission: MissionFrame;
   srad: SradFrame | null;
   cots: CotsFrame | null;
+  prediction: PredictionFrame | null;
+  landing_config: LandingConfigFrame | null;
+  rfd_config: RfdConfigFrame | null;
+  ground: GroundFrame | null;
 }
 
 export type Frame =
@@ -167,5 +297,9 @@ export type Frame =
   | LinkFrame
   | MissionFrame
   | AckFrame
+  | PredictionFrame
+  | LandingConfigFrame
+  | RfdConfigFrame
+  | GroundFrame
   | SnapshotFrame
   | ({ type: "config" } & MissionConfig);

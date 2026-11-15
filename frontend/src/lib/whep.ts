@@ -1,4 +1,4 @@
-// Minimal WHEP client (WebRTC-HTTP Egress Protocol) for the go2rtc sidecar.
+// Minimal WHEP client (WebRTC-HTTP Egress Protocol) for the go2rtc Video node.
 //
 // go2rtc restreams the USB-capture VTX feed as WebRTC. The overlay POSTs an SDP
 // offer to the WHEP endpoint (config `ui.video_url`, e.g.
