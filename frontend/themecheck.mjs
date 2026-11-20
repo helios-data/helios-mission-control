@@ -6,7 +6,7 @@ const p = await b.newPage({ viewport: { width: 1920, height: 1080 } });
 await p.addInitScript((t) => localStorage.setItem("hmc-theme", t), theme);
 const errs = [];
 p.on("pageerror", (e) => errs.push(e.message));
-for (const [name, path, wait] of [["admin", "/admin", 9000], ["overlay", "/overlay", 4000]]) {
+for (const [name, path, wait] of [["admin", "/admin", 9000]]) {
   await p.goto(base + path, { waitUntil: "networkidle" }).catch(() => {});
   await p.waitForTimeout(wait);
   await p.screenshot({ path: `../${name}_${theme}.png` });
