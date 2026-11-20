@@ -17,5 +17,5 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "admin.html", "overlay.html"]
+  "include": ["src", "admin.html"]
 }

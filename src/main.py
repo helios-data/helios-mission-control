@@ -277,10 +277,6 @@ def create_app() -> FastAPI:
     async def admin_page() -> HTMLResponse:
         return _serve_page("admin.html")
 
-    @app.get("/overlay", include_in_schema=False)
-    async def overlay_page() -> HTMLResponse:
-        return _serve_page("overlay.html")
-
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, Any]:
         return {"ok": True, "clients": app.state.hub.count,

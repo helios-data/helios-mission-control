@@ -2,10 +2,9 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
 
-// Multi-page build: /admin and /overlay are separate entry HTML files.
 // base='/static/' so hashed bundles are served by FastAPI at /static/* while
-// admin.html / overlay.html are served by the backend routes. /api, /ws, /brand
-// are proxied to the backend during `npm run dev`.
+// admin.html is served by the backend route. /api, /ws, /brand are proxied to
+// the backend during `npm run dev`.
 export default defineConfig({
   base: "/static/",
   plugins: [react()],
@@ -15,7 +14,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         admin: resolve(__dirname, "admin.html"),
-        overlay: resolve(__dirname, "overlay.html"),
       },
     },
   },
