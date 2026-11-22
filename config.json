@@ -9,7 +9,6 @@
   ],
   "flags": [],
   "websites": [
-    "http://localhost:8090/admin",
-    "http://localhost:8090/overlay"
+    "http://localhost:8090/admin"
   ]
 }
